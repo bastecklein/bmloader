@@ -863,63 +863,47 @@ async function createShapeOperation(code, renderModel, currentGroup) {
 
     const parts = raw.split(",");
 
-    let inShapeDef = false;
     let shapeName = "";
     const allShapeCoords = [];
     let curShapeCoord = [];
-    let nonShapeParms = 0;
-    let nonShapeParmIdx = 0;
 
     let extDepth = 1;
     let bevSize = 1;
     let bevThick = 1;
     let bevOffset = 0;
 
-    for(let i = 0; i < parts.length; i++) {
-        let part = parts[i].trim();
+    const shapeParts = parts[0].split("|");
 
-        if(part.indexOf("[") == 0) {
-            inShapeDef = true;
-            part = part.replace("[","");
-        }
+    for(let i = 0; i < shapeParts.length; i++) {
+        let part = shapeParts[i].trim();
 
-        if(inShapeDef) {
-            if(part.indexOf("]") == part.length - 1) {
-                inShapeDef = false;
-                part = part.replace("]","");
+        if(part.length > 0) {
+            const rawPart = getModValue(part, renderModel);
+            shapeName += rawPart + ".";
 
-                nonShapeParms = parts.length - i - 1;
-                nonShapeParmIdx = i + 1;
-            }
+            curShapeCoord.push(rawPart);
 
-            if(part.length > 0) {
-                const rawPart = getModValue(part, renderModel);
-                shapeName += rawPart + ".";
-
-                curShapeCoord.push(rawPart);
-
-                if(curShapeCoord.length == 2) {
-                    allShapeCoords.push([parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])]);
-                    curShapeCoord = [];
-                }
+            if(curShapeCoord.length == 2) {
+                allShapeCoords.push([parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])]);
+                curShapeCoord = [];
             }
         }
     }
 
-    if(nonShapeParms.length >= 1) {
-        extDepth = getModValue(parts[nonShapeParmIdx], renderModel);
+    if(parts.length > 1) {
+        extDepth = getModValue(parts[1], renderModel);
     }
 
-    if(nonShapeParms.length >= 2) {
-        bevSize = getModValue(parts[nonShapeParmIdx + 1], renderModel);
+    if(parts.length > 2) {
+        bevSize = getModValue(parts[2], renderModel);
     }
 
-    if(nonShapeParms.length >= 3) {
-        bevThick = getModValue(parts[nonShapeParmIdx + 2], renderModel);
+    if(parts.length > 3) {
+        bevThick = getModValue(parts[3], renderModel);
     }
 
-    if(nonShapeParms.length >= 4) {
-        bevOffset = getModValue(parts[nonShapeParmIdx + 3], renderModel);
+    if(parts.length > 4) {
+        bevOffset = getModValue(parts[4], renderModel);
     }
 
     if(allShapeCoords.length < 3) {
@@ -960,7 +944,7 @@ async function createShapeOperation(code, renderModel, currentGroup) {
     let material = null;
 
     // texture
-    if(nonShapeParms > 5) {
+    if(parts > 5) {
         material = await getTextureMaterial(parts[5], renderModel);
     }
         
