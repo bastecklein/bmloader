@@ -255,18 +255,6 @@ function doAnimate(model, inst, delta) {
                     }
                 });
 
-                /*
-                const useTx = model.bmDat.textures[rawVal];
-
-                const base = inst.action.replace("txChange", "");
-
-                if(useTx) {
-
-                    ob.material.map = useTx;
-                    ob.material.needsUpdate = true;
-                    
-                }*/
-
                 inst.step++;
 
                 if(inst.step >= inst.steps.length) {
@@ -792,15 +780,16 @@ async function createPlaneOperation(code, renderModel, currentGroup) {
             material = await getTextureMaterial(parts[3],renderModel);
         }
         
-
         if(!material) {
             if(parts.length > 2) {
                 material = new MeshLambertMaterial({
-                    color: getModValue(parts[2],renderModel)
+                    color: getModValue(parts[2],renderModel),
+                    side: DoubleSide
                 });
             } else {
                 material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
+                    color: DEF_MODEL_COLOR,
+                    side: DoubleSide
                 });
             }
         }
@@ -1338,7 +1327,7 @@ function doScaleOperation(id, code, renderModel) {
     }
 }
 
-async function getTextureMaterial(textureInstruction,renderModel) {
+async function getTextureMaterial(textureInstruction, renderModel) {
 
     if(!textureInstruction) {
         return null;
