@@ -37,6 +37,9 @@ class BMLoader extends Loader {
         let options = {};
         let modelDat = null;
 
+        console.log("onload");
+        console.log(url);
+
         if(typeof url === "object") {
 
             if(url.script && url.id) {
@@ -284,7 +287,13 @@ function resolveValue(model, value) {
  * @returns RenderBasicModel
  */
 async function loadBM(modelData, options) {
+
+    console.log("Loading BM model");
+    console.log(modelData);
+
     const renderModel = new RenderBasicModel(modelData);
+
+    console.log(renderModel);
 
     if(options) {
         if(options.variables) {
@@ -297,6 +306,8 @@ async function loadBM(modelData, options) {
     const currentGroup = {
         grp: null
     };
+
+   
 
     let code = modelData.script.trim();
     code = code.replaceAll(" ", "");
@@ -1072,6 +1083,7 @@ function rebuildBM(obj) {
         const tx = bm.textures[txName];
         bm.textures[txName] = rebuildStandardObject(tx, ModelTexture);
     }
+    return bm;
 }
 
 export {  BMLoader, BasicModel, ModelTexture, RenderBasicModel };
