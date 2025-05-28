@@ -338,11 +338,16 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
     const assignments = line.split("=");
     if (assignments.length === 2 && assignments[0].trim().startsWith("$")) {
         usingVar = assignments[0].trim().replace("$", "");
-        renderModel.bmDat.variables[usingVar] = assignments[1].trim(); // store expression early
-        return; // skip >-based mod parsing
+        codeParts = assignments[1].trim();
     }
 
     const modParts = codeParts.split(">");
+
+    // If this is a simple expression or literal assignment (no ">" present), store directly
+    if (modParts.length === 1 && usingVar && !modParts[0].includes("(") && !modParts[0].startsWith("@")) {
+        renderModel.bmDat.variables[usingVar] = modParts[0].trim();
+        return;
+    }
 
     for (let mod of modParts) {
         mod = mod.trim();
@@ -453,7 +458,6 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
         }
     }
 }
-
 
 async function createSphereOperation(code, renderModel, currentGroup) {
     let raw = code.replace("sphere(","");
