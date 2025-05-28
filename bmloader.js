@@ -214,9 +214,9 @@ function doAnimate(model, inst, delta) {
     const ob = model.bmDat.variables[inst.target];
 
     if(ob) {
-        const rawSpeed = resolveValue(model, inst.speed);
+        const rawSpeed = getModValue(inst.speed, model);
         const speed = MathUtils.degToRad(parseFloat(rawSpeed)) * delta;
-        const tgtVal = resolveValue(model, inst.steps[inst.step]);
+        const tgtVal = getModValue(inst.steps[inst.step], model);
 
         let changeBaseOb = null;
         let subProp = null;
@@ -271,6 +271,7 @@ function doAnimate(model, inst, delta) {
     }
 }
 
+/*
 function resolveValue(model, value) {
     let use = value;
 
@@ -284,6 +285,7 @@ function resolveValue(model, value) {
 
     return use;
 }
+*/
 
 /**
  * 
@@ -339,8 +341,17 @@ async function negotiateInstructionLine(line,renderModel,currentGroup) {
     const assignments = line.split("=");
 
     if(assignments.length > 1) {
+
+        if(assignments.length == 2 && assignments[0].indexOf("$") == 0) {
+            // its a straight variable assignment
+            usingVar = assignments[0].replace("$", "").trim();
+            codeParts = assignments[1].trim();
+            renderModel.bmDat.variables[usingVar] = codeParts;
+            return;
+        }
+
         const varPart = assignments[0];
-        usingVar = varPart.replace("$","");
+        usingVar = varPart.replace("$", "");
         codeParts = assignments[1];
     }
 
@@ -351,7 +362,7 @@ async function negotiateInstructionLine(line,renderModel,currentGroup) {
 
         if(mod.indexOf("$") == 0) {
 
-            let evals = mod.replace("$","");
+            let evals = mod.replace("$", "");
 
             if(usingVar) {
                 if(renderModel.bmDat.variables[evals]) {
