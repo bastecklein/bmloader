@@ -246,34 +246,26 @@ function doAnimate(model, inst, delta) {
             if(inst.renTime >= inst.speed) {
                 inst.renTime = 0;
 
+                getTextureMaterial(rawVal, model).then(function(mat) {
+                    if(mat) {
+                        ob.material = mat;
+                        ob.material.needsUpdate = true;
+                    } else {
+                        console.warn("Texture not found for:", rawVal);
+                    }
+                });
+
+                /*
                 const useTx = model.bmDat.textures[rawVal];
 
                 const base = inst.action.replace("txChange", "");
 
                 if(useTx) {
 
-                    let set = false;
-
-                    if(base && base.length > 0) {
-                        const num = parseInt(base);
-
-                        if(!isNaN(num) && Array.isArray(ob.material)) {
-                            if(ob.material.length > num) {
-                                ob.material[num].map = useTx;
-                                ob.material[num].needsUpdate = true;
-                                set = true;
-                            } else {
-                                console.warn("Texture change index out of bounds:", num, "for material array length:", ob.material.length);
-                            }
-                        }
-                    }
-
-                    if(!set) {
-                        ob.material.map = useTx;
-                        ob.material.needsUpdate = true;
-                    }
+                    ob.material.map = useTx;
+                    ob.material.needsUpdate = true;
                     
-                }
+                }*/
 
                 inst.step++;
 
