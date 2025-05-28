@@ -414,7 +414,7 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             { keyword: "capsule(", func: createCapsuleOperation },
             { keyword: "shape(", func: createShapeOperation },
             { keyword: "plane(", func: createPlaneOperation },
-            { keyword: "empty()", func: async () => new Group() }
+            { keyword: "empty()", func: createGroupOperation }
         ];
 
         let handled = false;
@@ -556,6 +556,18 @@ async function createSphereOperation(code, renderModel, currentGroup) {
     }
 
     return mesh;
+}
+
+function createGroupOperation(code, renderModel, currentGroup) {
+    const group = new Group();
+
+    if(currentGroup) {
+        currentGroup.add(group);
+    } else {
+        renderModel.add(group);
+    }
+
+    return group;
 }
 
 function getModValue(val, renderModel, visited = new Set()) {
