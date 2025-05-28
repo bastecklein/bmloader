@@ -873,7 +873,12 @@ async function createShapeOperation(code, renderModel, currentGroup) {
     let bevThick = 1;
     let bevOffset = 0;
 
-    const shapeParts = parts[0].split("|");
+    if(parts.length < 1) {
+        console.warn("Shape definition must have at least 1 point.");
+        return null;
+    }
+
+    const shapeParts = getModValue(parts[0], renderModel).split("|");
 
     for(let i = 0; i < shapeParts.length; i++) {
         let part = shapeParts[i].trim();
