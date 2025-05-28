@@ -1,6 +1,6 @@
 {
     "name": "bmloader",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "description": "threejs loader for Basic Model (.bm) files",
     "keywords": ["threejs", "loader", "bm", "basic modeler", "library", "ape apps", "module"],
     "homepage": "https://www.ape-apps.com",
@@ -27,7 +27,13 @@
         "three": "*",
         "common-helpers": "git+ssh://git@github.com:bastecklein/common-helpers.git#main"
     },
-    "devDependencies": {},
+    "devDependencies": {
+        "@eslint/css": "*",
+        "@eslint/js": "*",
+        "@eslint/json": "*",
+        "eslint": "*",
+        "globals": "*"
+    },
     "private": false,
     "type": "module"
 }
