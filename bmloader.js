@@ -946,7 +946,7 @@ async function createShapeOperation(code, renderModel, currentGroup) {
     let material = null;
 
     // texture
-    if(parts > 5) {
+    if(parts.length > 5) {
         material = await getTextureMaterial(parts[5], renderModel);
     }
         
