@@ -973,7 +973,7 @@ async function createShapeOperation(code, renderModel, currentGroup) {
 }
 
 async function createCapsuleOperation(code,renderModel,currentGroup) {
-    let raw = code.replace("calsule(","");
+    let raw = code.replace("capsule(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
