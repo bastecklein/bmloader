@@ -1159,7 +1159,11 @@ function doPositionOperation(id, code, renderModel) {
         obid = renderModel.bmDat.variables[id];
     }
 
-    if(!obid) {
+    if(!obid || !obid.position) {
+        console.warn("Invalid object for position operation:", id);
+        console.warn("Code:", code);
+        console.warn("Render Model:", renderModel);
+        console.warn(obid);
         return;
     }
 
