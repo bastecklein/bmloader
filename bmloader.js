@@ -864,9 +864,6 @@ async function createShapeOperation(code, renderModel, currentGroup) {
 
     const parts = raw.split(",");
 
-    console.log("build shape");
-    console.log(parts);
-
     let shapeName = "";
     const allShapeCoords = [];
     let curShapeCoord = [];
@@ -949,26 +946,17 @@ async function createShapeOperation(code, renderModel, currentGroup) {
     let material = null;
 
     // texture
-    if(parts.length > 5) {
-        console.log("get texture material for shape");
-        console.log(parts[5]);
-        material = await getTextureMaterial(parts[5], renderModel);
+    if(parts.length > 6) {
+        material = await getTextureMaterial(parts[6], renderModel);
     }
         
 
     if(!material) {
-        if(parts.length > 4) {
-
-            console.log("get color material for shape");
-            console.log(parts[4]);
-
+        if(parts.length > 5) {
             material = new MeshLambertMaterial({
-                color: getModValue(parts[4],renderModel)
+                color: getModValue(parts[5],renderModel)
             });
         } else {
-
-            console.log("get default color material for shape");
-
             material = new MeshLambertMaterial({
                 color: DEF_MODEL_COLOR
             });
