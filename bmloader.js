@@ -14,7 +14,10 @@ import {
     CylinderGeometry,
     DoubleSide,
     SRGBColorSpace,
-    TextureLoader
+    TextureLoader,
+    CapsuleGeometry,
+    Shape,
+    ExtrudeGeometry
 } from "three";
 
 const storedGeometries = {};
@@ -36,9 +39,6 @@ class BMLoader extends Loader {
 
         let options = {};
         let modelDat = null;
-
-        console.log("onload");
-        console.log(url);
 
         if(typeof url === "object") {
 
@@ -288,12 +288,7 @@ function resolveValue(model, value) {
  */
 async function loadBM(modelData, options) {
 
-    console.log("Loading BM model");
-    console.log(modelData);
-
     const renderModel = new RenderBasicModel(modelData);
-
-    console.log(renderModel);
 
     if(options) {
         if(options.variables) {
@@ -470,6 +465,26 @@ async function negotiateInstructionLine(line,renderModel,currentGroup) {
             continue;
         }
 
+        if(mod.indexOf("capsule(") == 0) {
+            usingObj = await createCapsuleOperation(mod, renderModel, currentGroup.grp);
+
+            if(usingVar) {
+                renderModel.bmDat.variables[usingVar] = usingObj;
+            }
+
+            continue;
+        }
+
+        if(mod.indexOf("shape(") == 0) {
+            usingObj = await createShapeOperation(mod, renderModel, currentGroup.grp);
+
+            if(usingVar) {
+                renderModel.bmDat.variables[usingVar] = usingObj;
+            }
+
+            continue;
+        }
+
         if(mod.indexOf("geotranslate(") == 0) {
             handleGeoTranslate(mod, renderModel);
             continue;
@@ -494,6 +509,32 @@ async function negotiateInstructionLine(line,renderModel,currentGroup) {
             } else {
                 if(usingObj) {
                     doRotateOperation(usingObj, mod, renderModel);
+                }
+            }
+
+            continue;
+        }
+
+        if(mod.indexOf("scale(") == 0) {
+
+            if(usingVar) {
+                doScaleOperation(usingVar, mod, renderModel);
+            } else {
+                if(usingObj) {
+                    doScaleOperation(usingObj, mod, renderModel);
+                }
+            }
+
+            continue;
+        }
+
+        if(mod.indexOf("opacity(") == 0) {
+
+            if(usingVar) {
+                doOpacityOperation(usingVar, mod, renderModel);
+            } else {
+                if(usingObj) {
+                    doOpacityOperation(usingObj, mod, renderModel);
                 }
             }
 
@@ -816,6 +857,202 @@ async function createConeOperation(code,renderModel,currentGroup) {
     return mesh;
 }
 
+async function createShapeOperation(code, renderModel, currentGroup) {
+    let raw = code.replace("shape(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let inShapeDef = false;
+    let shapeName = "";
+    const allShapeCoords = [];
+    let curShapeCoord = [];
+    let nonShapeParms = 0;
+    let nonShapeParmIdx = 0;
+
+    let extDepth = 1;
+    let bevSize = 1;
+    let bevThick = 1;
+    let bevOffset = 0;
+
+    for(let i = 0; i < parts.length; i++) {
+        let part = parts[i].trim();
+
+        if(part.indexOf("[") == 0) {
+            inShapeDef = true;
+            part = part.replace("[","");
+        }
+
+        if(inShapeDef) {
+            if(part.indexOf("]") == part.length - 1) {
+                inShapeDef = false;
+                part = part.replace("]","");
+
+                nonShapeParms = parts.length - i - 1;
+                nonShapeParmIdx = i + 1;
+            }
+
+            if(part.length > 0) {
+                const rawPart = getModValue(part, renderModel);
+                shapeName += rawPart + ".";
+
+                curShapeCoord.push(rawPart);
+
+                if(curShapeCoord.length == 2) {
+                    allShapeCoords.push([parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])]);
+                    curShapeCoord = [];
+                }
+            }
+        }
+    }
+
+    if(nonShapeParms.length >= 1) {
+        extDepth = getModValue(parts[nonShapeParmIdx], renderModel);
+    }
+
+    if(nonShapeParms.length >= 2) {
+        bevSize = getModValue(parts[nonShapeParmIdx + 1], renderModel);
+    }
+
+    if(nonShapeParms.length >= 3) {
+        bevThick = getModValue(parts[nonShapeParmIdx + 2], renderModel);
+    }
+
+    if(nonShapeParms.length >= 4) {
+        bevOffset = getModValue(parts[nonShapeParmIdx + 3], renderModel);
+    }
+
+    if(allShapeCoords.length < 3) {
+        console.warn("Shape definition must have at least 3 points.");
+        return null;
+    }
+
+    const shape = new Shape(allShapeCoords);
+
+
+    let geoName = "shape." + extDepth + "." + bevSize + "." + bevThick + "." + bevOffset + "." + shapeName + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+    let geometry = null;
+
+    if(storedGeometries[geoName]) {
+        geometry = storedGeometries[geoName];
+    } else {
+        let bevelEnabled = false;
+
+        if(bevSize > 0 && bevThick > 0) {
+            bevelEnabled = true;
+        }
+
+        const extrudeSettings = {
+            steps: 1,
+            depth: extDepth,
+            bevelEnabled: bevelEnabled,
+            bevelThickness: bevThick,
+            bevelSize: bevSize,
+            bevelOffset: bevOffset,
+            bevelSegments: 1
+        };
+
+        geometry = new ExtrudeGeometry(shape, extrudeSettings);
+    }
+
+    let mesh = null;
+
+    let material = null;
+
+    // texture
+    if(nonShapeParms > 5) {
+        material = await getTextureMaterial(parts[5], renderModel);
+    }
+        
+
+    if(!material) {
+        if(parts.length > 4) {
+            material = new MeshLambertMaterial({
+                color: getModValue(parts[4],renderModel)
+            });
+        } else {
+            material = new MeshLambertMaterial({
+                color: DEF_MODEL_COLOR
+            });
+        }
+    }
+
+    mesh = new Mesh(geometry, material);
+
+    if(currentGroup) {
+        currentGroup.add(mesh);
+    } else {
+        renderModel.add(mesh);
+    }
+
+    return mesh;
+}
+
+async function createCapsuleOperation(code,renderModel,currentGroup) {
+    let raw = code.replace("calsule(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let mesh = null;
+
+    let rad = 1;
+    let height = 1;
+    let seg = 1;
+    let radseg = 1;
+
+    if(parts.length >= 4) {
+
+        rad = getModValue(parts[0], renderModel);
+        height = getModValue(parts[1], renderModel);
+        seg = getModValue(parts[2], renderModel);
+        radseg = getModValue(parts[3], renderModel);
+
+        let geoName = "shape." + rad + "." + height + "." + seg + "." + radseg + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+
+        let geometry = null;
+
+        if(storedGeometries[geoName]) {
+            geometry = storedGeometries[geoName];
+        } else {
+            geometry = new CapsuleGeometry(rad, height, seg, radseg);
+            geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
+            storedGeometries[geoName] = geometry;
+        }
+
+        let material = null;
+
+        // texture
+        if(parts.length > 5) {
+            material = await getTextureMaterial(parts[5], renderModel);
+        }
+        
+
+        if(!material) {
+            if(parts.length > 4) {
+                material = new MeshLambertMaterial({
+                    color: getModValue(parts[4],renderModel)
+                });
+            } else {
+                material = new MeshLambertMaterial({
+                    color: DEF_MODEL_COLOR
+                });
+            }
+        }
+
+        mesh = new Mesh(geometry, material);
+
+        if(currentGroup) {
+            currentGroup.add(mesh);
+        } else {
+            renderModel.add(mesh);
+        }
+        
+    }
+
+    return mesh;
+}
+
 async function createCylinderOperation(code,renderModel,currentGroup) {
     let raw = code.replace("cylinder(","");
     raw = raw.replace(")","");
@@ -915,11 +1152,11 @@ function doPositionOperation(id, code, renderModel) {
 
     if(parts.length >= 3) {
 
-        let x = getModValue(parts[0],renderModel);
-        let y = getModValue(parts[1],renderModel);
-        let z = getModValue(parts[2],renderModel);
+        const x = getModValue(parts[0],renderModel);
+        const y = getModValue(parts[1],renderModel);
+        const z = getModValue(parts[2],renderModel);
 
-        obid.position.set(x,y,z);
+        obid.position.set(x, y, z);
     }
 }
 
@@ -947,6 +1184,75 @@ function doRotateOperation(id,code,renderModel) {
         let z = getModValue(parts[2], renderModel);
 
         obid.rotation.set(MathUtils.degToRad(x), MathUtils.degToRad(y), MathUtils.degToRad(z));
+    }
+}
+
+function doOpacityOperation(id, code, renderModel) {
+
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid) {
+        return;
+    }
+
+    let raw = code.replace("opacity(","");
+    raw = raw.replace(")","");
+
+    let opVal = parseInt(raw);
+
+    if(isNaN(opVal)) {
+        opVal = 1;
+    }
+
+    if(opVal < 0) {
+        opVal = 0;
+    }
+
+    if(opVal > 1) {
+        opVal = 1;
+    }
+
+    if(obid.material) {
+        if(Array.isArray(obid.material)) {
+            for(let i = 0; i < obid.material.length; i++) {
+                obid.material[i].opacity = opVal;
+                obid.material[i].transparent = true;
+            }
+        } else {
+            obid.material.opacity = opVal;
+            obid.material.transparent = true;
+        }
+    }
+}
+
+function doScaleOperation(id, code, renderModel) {
+
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid) {
+        return;
+    }
+
+    let raw = code.replace("scale(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    if(parts.length >= 3) {
+
+        const x = getModValue(parts[0], renderModel);
+        const y = getModValue(parts[1], renderModel);
+        const z = getModValue(parts[2], renderModel);
+
+        obid.scale.set(x, y, z);
     }
 }
 
@@ -1003,7 +1309,7 @@ async function loadTexture(txInst,renderModel) {
     return tx;
 }
 
-async function getFrameTexture(txDef,instructions,frame,renderModel) {
+async function getFrameTexture(txDef, instructions, frame, renderModel) {
     if(!threeLoader) {
         threeLoader = new TextureLoader();
     }
