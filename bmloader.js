@@ -633,7 +633,6 @@ function getModValue(val, renderModel, visited = new Set()) {
         ...(renderModel.bmDat.variableOverrides || {})
     };
 
-    // Recursive variable resolver
     function resolveVar(key) {
         if (visited.has(key)) {
             console.warn(`Circular reference detected for variable: ${key}`);
@@ -645,11 +644,11 @@ function getModValue(val, renderModel, visited = new Set()) {
         let value = rawVars[key];
         if (typeof value === 'undefined') return 0;
 
-        // Recursively resolve string expressions or variables
+        // Recurse and fully resolve the variable's value
         return getModValue(value, renderModel, visited);
     }
 
-    // Handle simple variable cases
+    // $foo or -$foo (simple variable reference)
     const varOnlyMatch = val.match(/^(-?)\$(\w+)$/);
     if (varOnlyMatch) {
         const [, neg, varName] = varOnlyMatch;
@@ -657,16 +656,17 @@ function getModValue(val, renderModel, visited = new Set()) {
         return typeof resolved === 'number' && neg === '-' ? -resolved : resolved;
     }
 
-    // If it’s not math, just return literal
+    // If not math-like, return literal or parsed float
     const looksLikeMath = /[+\-*/()]/.test(val) || /\$\w+/.test(val);
     if (!looksLikeMath) {
         return isNaN(val) ? val : parseFloat(val);
     }
 
-    // Evaluate math expression after resolving variables
+    // Replace $var with real variable names (expr-eval expects bare names)
+    const cleanExpr = val.replace(/\$(\w+)/g, (_, name) => name);
+
     try {
-        // Replace $var with actual values from scope
-        const expr = parser.parse(val.replace(/\$/g, ''));
+        const expr = parser.parse(cleanExpr);
         const scope = new Proxy({}, {
             get(_, name) {
                 return resolveVar(name);
@@ -674,7 +674,7 @@ function getModValue(val, renderModel, visited = new Set()) {
         });
         return expr.evaluate(scope);
     } catch (e) {
-        console.warn('Expression error:', val, e);
+        console.warn(`Failed to evaluate: ${val}`, e);
         return val;
     }
 }
