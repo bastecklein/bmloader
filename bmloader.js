@@ -633,6 +633,7 @@ function getModValue(val, renderModel, visited = new Set()) {
         ...(renderModel.bmDat.variableOverrides || {})
     };
 
+    // Recursive variable resolver
     function resolveVar(key) {
         if (visited.has(key)) {
             console.warn(`Circular reference detected for variable: ${key}`);
@@ -644,14 +645,11 @@ function getModValue(val, renderModel, visited = new Set()) {
         let value = rawVars[key];
         if (typeof value === 'undefined') return 0;
 
-        if (typeof value === 'string') {
-            return getModValue(value, renderModel, visited);
-        }
-
-        return isNaN(value) ? value : parseFloat(value);
+        // Recursively resolve string expressions or variables
+        return getModValue(value, renderModel, visited);
     }
 
-    // Handle "$foo" or "-$foo"
+    // Handle simple variable cases
     const varOnlyMatch = val.match(/^(-?)\$(\w+)$/);
     if (varOnlyMatch) {
         const [, neg, varName] = varOnlyMatch;
@@ -659,15 +657,16 @@ function getModValue(val, renderModel, visited = new Set()) {
         return typeof resolved === 'number' && neg === '-' ? -resolved : resolved;
     }
 
+    // If it’s not math, just return literal
     const looksLikeMath = /[+\-*/()]/.test(val) || /\$\w+/.test(val);
     if (!looksLikeMath) {
         return isNaN(val) ? val : parseFloat(val);
     }
 
-    // Evaluate expression with full variable resolution
+    // Evaluate math expression after resolving variables
     try {
-        const cleanExpr = val.replace(/\$/g, '');
-        const expr = parser.parse(cleanExpr);
+        // Replace $var with actual values from scope
+        const expr = parser.parse(val.replace(/\$/g, ''));
         const scope = new Proxy({}, {
             get(_, name) {
                 return resolveVar(name);
