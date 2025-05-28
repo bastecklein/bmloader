@@ -628,25 +628,39 @@ async function createSphereOperation(code, renderModel, currentGroup) {
 function getModValue(val, renderModel) {
     if (typeof val !== 'string') return val;
 
-    // Merge base and override variables (overrides take precedence)
     const rawVars = {
         ...(renderModel.bmDat.variables || {}),
         ...(renderModel.bmDat.variableOverrides || {})
     };
 
-    // Normalize keys (remove leading $) and ensure fallback to 0
+    // Normalize keys and provide fallback for undefined values
     const normalizedVars = new Proxy({}, {
         get(target, prop) {
             const key = String(prop);
             const rawKey = key.startsWith('$') ? key.slice(1) : key;
-            let val = rawVars[rawKey];
-            let num = parseFloat(val);
-            return isNaN(num) ? 0 : num;
+            let value = rawVars[rawKey];
+            return typeof value === 'undefined' ? 0 : value;
         }
     });
 
+    // Pure variable reference like "$foo" or "-$foo"
+    const varOnlyMatch = val.match(/^(-?)\$(\w+)$/);
+    if (varOnlyMatch) {
+        const [, neg, varName] = varOnlyMatch;
+        let raw = rawVars[varName];
+        if (typeof raw === 'undefined') return 0;
+        if (!isNaN(raw)) return parseFloat(raw) * (neg === '-' ? -1 : 1);
+        return raw; // string value (e.g., hex color)
+    }
+
+    // Determine if it's likely a math expression
+    const looksLikeMath = /[+\-*/()]/.test(val) || /\$\w+/.test(val);
+    if (!looksLikeMath) {
+        return isNaN(val) ? val : parseFloat(val);
+    }
+
+    // Try math expression (strip $ prefixes first)
     try {
-        // Strip dollar signs for the parser
         const cleanExpr = val.replace(/\$/g, '');
         const expr = parser.parse(cleanExpr);
         return expr.evaluate(normalizedVars);
