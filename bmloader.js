@@ -142,7 +142,9 @@ class RenderBasicModel extends Group {
             variableOverrides: {},
             geoTranslate: { x: 0, y: 0, z: 0 },
             animations: {},
-            animation: null
+            animation: null,
+            _scriptLines: null,
+            lastAnimation: null
         };
     }
 
@@ -152,6 +154,10 @@ class RenderBasicModel extends Group {
 
     animate(delta) {
         animateModel(this, delta);
+    }
+
+    reset() {
+        resetRenderModel(this);
     }
 }
 
@@ -165,6 +171,7 @@ class RenderAnimation {
 
         this.speed = 0;
         this.steps = [];
+        this.renTime = 0;
 
         parseAnimationInstructions(this);
     }
@@ -201,8 +208,16 @@ function parseAnimationInstructions(animation) {
 
 function animateModel(model, delta) {
     if(!model.bmDat.animations || !model.bmDat.animation) {
+
+        if(model.bmDat.lastAnimation) {
+            model.bmDat.lastAnimation = null;
+            resetRenderModel(model);
+        }
+
         return;
     }
+
+    model.bmDat.lastAnimation = model.bmDat.animation;
 
     const animation = model.bmDat.animations[model.bmDat.animation];
 
@@ -223,6 +238,38 @@ function doAnimate(model, inst, delta) {
         let changeBaseOb = null;
         let subProp = null;
         let target = null;
+
+        if(inst.action.indexOf("txChange") == 0) {
+            inst.renTime += delta;
+
+            if(inst.renTime >= inst.speed) {
+                inst.renTime = 0;
+
+                const useTx = model.bmDat.textures[tgtVal];
+
+                if(useTx) {
+                    ob.material.map = useTx;
+                    ob.material.needsUpdate = true;
+                }
+
+                inst.step++;
+
+                if(inst.step >= inst.steps.length) {
+                    inst.step = 0;
+                }
+            }
+        }
+
+        if(inst.action.indexOf("scale") == 0) {
+            changeBaseOb = "scale";
+            subProp = inst.action.replace("scale","").toLowerCase();
+            target = parseFloat(tgtVal);
+
+            if(isNaN(target)) {
+                console.warn("Invalid scale target value:", tgtVal);
+                return;
+            }
+        }
 
         if(inst.action.indexOf("rotate") == 0) {
             changeBaseOb = "rotation";
@@ -273,22 +320,6 @@ function doAnimate(model, inst, delta) {
     }
 }
 
-/*
-function resolveValue(model, value) {
-    let use = value;
-
-    if(use.indexOf("$") == 0) {
-        use = model.bmDat.variables[use.replace("$","")];
-    }
-
-    if(use.indexOf("-$") == 0) {
-        use = "-" + model.bmDat.variables[use.replace("-$","")];
-    }
-
-    return use;
-}
-*/
-
 /**
  * 
  * @param {BasicModel} modelData 
@@ -329,6 +360,13 @@ async function loadBM(modelData, options) {
 
 async function negotiateInstructionLine(line, renderModel, currentGroup) {
     if (line.trim().startsWith("//") || !line.trim()) return;
+
+    // Store original instruction
+    if (!renderModel.bmDat._scriptLines) {
+        renderModel.bmDat._scriptLines = [];
+    }
+
+    renderModel.bmDat._scriptLines.push(line);
 
     let usingVar = null;
     let usingObj = null;
@@ -454,6 +492,17 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
                     usingObj.material.lightMap = renderModel.bmDat.textures[getModValue(lightMap, renderModel)];
                 }
                 usingObj.material.needsUpdate = true;
+            }
+            continue;
+        }
+
+        // Handle 'bottomAlign()'
+        if (mod === "bottomAlign()") {
+            if (usingObj && usingObj.geometry) {
+                usingObj.geometry.computeBoundingBox();
+                const bbox = usingObj.geometry.boundingBox;
+                const offsetY = -bbox.min.y;
+                usingObj.geometry.translate(0, offsetY, 0);
             }
             continue;
         }
@@ -1392,7 +1441,7 @@ async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat) {
     }
 
     if(txDef.frames == 1) {
-        return imCanvas.toDataURL("image/webp", 0.8);
+        return imCanvas.toDataURL("image/webp", 0.85);
     }
 
     console.log("GRAB A FRAME!");
@@ -1406,6 +1455,31 @@ function rebuildBM(obj) {
         bm.textures[txName] = rebuildStandardObject(tx, ModelTexture);
     }
     return bm;
+}
+
+// Reset the model to its original .bm state
+async function resetRenderModel(renderModel) {
+    if (!renderModel || !renderModel.bmDat || !renderModel.bmDat._scriptLines) return;
+
+    // Clear scene
+    while (renderModel.children.length > 0) {
+        renderModel.remove(renderModel.children[0]);
+    }
+
+    // Reset data
+    renderModel.bmDat.variables = {};
+    renderModel.bmDat.variableOverrides = {};
+    renderModel.bmDat.animations = {};
+
+    const currentGroup = { grp: null };
+    for (const line of renderModel.bmDat._scriptLines) {
+        await negotiateInstructionLine(line, renderModel, currentGroup);
+    }
+
+    if (currentGroup.grp) {
+        renderModel.add(currentGroup.grp);
+        currentGroup.grp = null;
+    }
 }
 
 export {  BMLoader, BasicModel, ModelTexture, RenderBasicModel };
