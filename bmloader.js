@@ -445,13 +445,13 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             const args = mod.substring(9, mod.length - 1).split(",").map(s => s.trim());
             const [color, bumpMap, lightMap] = args;
             if (usingObj && usingObj.material) {
-                usingObj.material.color = new Color(color);
-                if (bumpMap && renderModel.bmDat.textures[bumpMap]) {
-                    usingObj.material.bumpMap = renderModel.bmDat.textures[bumpMap];
+                usingObj.material.color = new Color(getModValue(color, renderModel));
+                if (bumpMap && renderModel.bmDat.textures[getModValue(bumpMap, renderModel)]) {
+                    usingObj.material.bumpMap = renderModel.bmDat.textures[getModValue(bumpMap, renderModel)];
                     usingObj.material.bumpScale = 1;
                 }
-                if (lightMap && renderModel.bmDat.textures[lightMap]) {
-                    usingObj.material.lightMap = renderModel.bmDat.textures[lightMap];
+                if (lightMap && renderModel.bmDat.textures[getModValue(lightMap, renderModel)]) {
+                    usingObj.material.lightMap = renderModel.bmDat.textures[getModValue(lightMap, renderModel)];
                 }
                 usingObj.material.needsUpdate = true;
             }
