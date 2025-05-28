@@ -25,7 +25,8 @@
     "config": {},
     "dependencies": {
         "three": "*",
-        "common-helpers": "git+ssh://git@github.com:bastecklein/common-helpers.git#main"
+        "common-helpers": "git+ssh://git@github.com:bastecklein/common-helpers.git#main",
+        "expr-eval": "*"
     },
     "devDependencies": {
         "@eslint/css": "*",

@@ -21,11 +21,15 @@ import {
     Vector2
 } from "three";
 
+import { Parser } from "expr-eval";
+
 const storedGeometries = {};
 const storedImageCanvases = {};
 
 const DEF_MODEL_COLOR = "#999999";
 const FULLTURN = MathUtils.degToRad(360);
+
+const parser = new Parser();
 
 let threeLoader = null;
 let remoteModels = {};
@@ -622,45 +626,34 @@ async function createSphereOperation(code, renderModel, currentGroup) {
 }
 
 function getModValue(val, renderModel) {
+    if (typeof val !== 'string') return val;
 
-    let isNeg = false;
-    let baseVar = val;
-    let isVariable = false;
+    // Merge base and override variables (overrides take precedence)
+    const rawVars = {
+        ...(renderModel.bmDat.variables || {}),
+        ...(renderModel.bmDat.variableOverrides || {})
+    };
 
-    if(val.indexOf("-$") == 0) {
-        isNeg = true;
-        isVariable = true;
-        baseVar = val.replace("-$","");
-    }
-
-    if(val.indexOf("$") == 0) {
-        baseVar = val.replace("$","");
-        isVariable = true;
-    }
-
-    if(!isVariable) {
-        if(isNaN(val)) {
-            return val;
-        } else {
-            return parseFloat(val);
+    // Normalize keys (remove leading $) and ensure fallback to 0
+    const normalizedVars = new Proxy({}, {
+        get(target, prop) {
+            const key = String(prop);
+            const rawKey = key.startsWith('$') ? key.slice(1) : key;
+            let val = rawVars[rawKey];
+            let num = parseFloat(val);
+            return isNaN(num) ? 0 : num;
         }
+    });
+
+    try {
+        // Strip dollar signs for the parser
+        const cleanExpr = val.replace(/\$/g, '');
+        const expr = parser.parse(cleanExpr);
+        return expr.evaluate(normalizedVars);
+    } catch (e) {
+        console.warn('Expression error:', val, e);
+        return val;
     }
-
-    let varItm = renderModel.bmDat.variables[baseVar];
-
-    if(renderModel.bmDat.variableOverrides[baseVar]) {
-        varItm = renderModel.bmDat.variableOverrides[baseVar];
-    }
-
-    if(isNaN(varItm)) {
-        return varItm;
-    } else {
-        if(isNeg) {
-            return -parseFloat(varItm);
-        }
-    }
-
-    return parseFloat(varItm);
 }
 
 async function createTorusOperation(code,renderModel,currentGroup) {
