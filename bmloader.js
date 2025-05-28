@@ -233,7 +233,8 @@ function doAnimate(model, inst, delta) {
     if(ob) {
         const rawSpeed = getModValue(inst.speed, model);
         const speed = MathUtils.degToRad(parseFloat(rawSpeed)) * delta;
-        const tgtVal = getModValue(inst.steps[inst.step], model);
+        const rawVal = inst.steps[inst.step];
+        const tgtVal = getModValue(rawVal, model);
 
         let changeBaseOb = null;
         let subProp = null;
@@ -245,11 +246,9 @@ function doAnimate(model, inst, delta) {
             if(inst.renTime >= inst.speed) {
                 inst.renTime = 0;
 
-                const useTx = model.bmDat.textures[tgtVal];
+                const useTx = model.bmDat.textures[rawVal];
 
                 const base = inst.action.replace("txChange", "");
-
-                
 
                 if(useTx) {
 
