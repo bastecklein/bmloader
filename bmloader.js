@@ -325,11 +325,8 @@ async function loadBM(modelData, options) {
     return renderModel;
 }
 
-async function negotiateInstructionLine(line,renderModel,currentGroup) {
-
-    if(line.indexOf("//") == 0) {
-        return;
-    }
+async function negotiateInstructionLine(line, renderModel, currentGroup) {
+    if (line.trim().startsWith("//") || !line.trim()) return;
 
     let usingVar = null;
     let usingObj = null;
@@ -339,235 +336,120 @@ async function negotiateInstructionLine(line,renderModel,currentGroup) {
     let codeParts = line;
 
     const assignments = line.split("=");
-
-    if(assignments.length > 1) {
-
-        if(assignments.length == 2 && assignments[0].indexOf("$") == 0) {
-            // its a straight variable assignment
-            usingVar = assignments[0].replace("$", "").trim();
-            codeParts = assignments[1].trim();
-            renderModel.bmDat.variables[usingVar] = codeParts;
-            return;
-        }
-
-        const varPart = assignments[0];
-        usingVar = varPart.replace("$", "");
-        codeParts = assignments[1];
+    if (assignments.length === 2 && assignments[0].trim().startsWith("$")) {
+        usingVar = assignments[0].trim().replace("$", "");
+        codeParts = assignments[1].trim();
     }
 
-    let modParts = codeParts.split(">");
+    const modParts = codeParts.split(">");
 
-    for(let i = 0; i < modParts.length; i++) {
-        const mod = modParts[i];
+    for (let mod of modParts) {
+        mod = mod.trim();
+        if (!mod) continue;
 
-        if(mod.indexOf("$") == 0) {
+        // Handle variable references
+        if (mod.startsWith("$")) {
+            const evals = mod.replace("$", "");
 
-            let evals = mod.replace("$", "");
-
-            if(usingVar) {
-                if(renderModel.bmDat.variables[evals]) {
-                    renderModel.bmDat.variables[usingVar] = renderModel.bmDat.variables[evals];
-                }
+            if (usingVar && renderModel.bmDat.variables[evals]) {
+                renderModel.bmDat.variables[usingVar] = renderModel.bmDat.variables[evals];
             } else {
                 usingVar = evals;
-
-                if(renderModel.bmDat.variables[usingVar]) {
-                    usingObj = renderModel.bmDat.variables[usingVar];
-                }
+                usingObj = renderModel.bmDat.variables[evals] || null;
             }
-
             continue;
         }
 
-        if(mod.indexOf("@") == 0) {
+        // Handle animation references
+        if (mod.startsWith("@")) {
+            const evals = mod.replace("@", "");
 
-            let evals = mod.replace("@","");
-
-            if(usingAni) {
-                if(renderModel.bmDat.animations[evals]) {
-                    renderModel.bmDat.animations[usingAni] = renderModel.bmDat.animations[evals];
-                }
+            if (usingAni && renderModel.bmDat.animations[evals]) {
+                renderModel.bmDat.animations[usingAni] = renderModel.bmDat.animations[evals];
             } else {
                 usingAni = evals;
-
-                if(renderModel.bmDat.animations[usingAni]) {
-                    aniOb = renderModel.bmDat.animations[usingAni];
-                }
+                aniOb = renderModel.bmDat.animations[evals] || null;
             }
-
             continue;
         }
 
-        if(usingAni) {
-            if(!aniOb) {
-                renderModel.bmDat.animations[usingAni] = [];
-                aniOb = renderModel.bmDat.animations[usingAni];
+        // Handle animation definitions
+        if (usingAni) {
+            if (!aniOb) {
+                aniOb = [];
+                renderModel.bmDat.animations[usingAni] = aniOb;
             }
-
             aniOb.push(new RenderAnimation(mod));
+            continue;
         }
 
-        if(mod == "endgroup()" || mod == "startgroup()") {
-            if(currentGroup.grp) {
+        // Handle grouping
+        if (mod === "startgroup()" || mod === "endgroup()") {
+            if (mod === "endgroup()" && currentGroup.grp) {
                 renderModel.add(currentGroup.grp);
+                currentGroup.grp = null;
+            } else if (mod === "startgroup()") {
+                currentGroup.grp = new Group();
+                usingObj = currentGroup.grp;
+                if (usingVar) renderModel.bmDat.variables[usingVar] = currentGroup.grp;
             }
-
-            currentGroup.grp = null;
-
-            if(mod == "endgroup()") {
-                continue;
-            }
-        }
-
-        if(mod == "startgroup()") {
-            currentGroup.grp = new Group();
-
-            usingObj = currentGroup.grp;
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = currentGroup.grp;
-            }
-
             continue;
         }
 
-        if(mod.indexOf("sphere(") == 0) {
-            usingObj = await createSphereOperation(mod, renderModel, currentGroup.grp);
+        // Geometry and transform operations
+        const ops = [
+            { keyword: "sphere(", func: createSphereOperation },
+            { keyword: "torus(", func: createTorusOperation },
+            { keyword: "box(", func: createBoxOperation },
+            { keyword: "cone(", func: createConeOperation },
+            { keyword: "cylinder(", func: createCylinderOperation },
+            { keyword: "capsule(", func: createCapsuleOperation },
+            { keyword: "shape(", func: createShapeOperation }
+        ];
 
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
+        let handled = false;
+        for (const op of ops) {
+            if (mod.startsWith(op.keyword)) {
+                usingObj = await op.func(mod, renderModel, currentGroup.grp);
+                if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
+                handled = true;
+                break;
             }
-
-            continue;
         }
+        if (handled) continue;
 
-        if(mod.indexOf("torus(") == 0) {
-            usingObj = await createTorusOperation(mod, renderModel, currentGroup.grp);
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("box(") == 0) {
-            usingObj = await createBoxOperation(mod, renderModel, currentGroup.grp);
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("cone(") == 0) {
-            usingObj = await createConeOperation(mod, renderModel, currentGroup.grp);
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("cylinder(") == 0) {
-            usingObj = await createCylinderOperation(mod, renderModel, currentGroup.grp);
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("capsule(") == 0) {
-            usingObj = await createCapsuleOperation(mod, renderModel, currentGroup.grp);
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("shape(") == 0) {
-            usingObj = await createShapeOperation(mod, renderModel, currentGroup.grp);
-
-            if(usingVar) {
-                renderModel.bmDat.variables[usingVar] = usingObj;
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("geotranslate(") == 0) {
+        // Handle transforms
+        if (mod.startsWith("geotranslate(")) {
             handleGeoTranslate(mod, renderModel);
             continue;
         }
-
-        if(mod.indexOf("position(") == 0) {
-            if(usingVar) {
-                doPositionOperation(usingVar, mod, renderModel);
-            } else {
-                if(usingObj) {
-                    doPositionOperation(usingObj, mod, renderModel);
-                }
-            }
-
+        if (mod.startsWith("position(")) {
+            (usingVar ? doPositionOperation(usingVar, mod, renderModel)
+                : usingObj && doPositionOperation(usingObj, mod, renderModel));
+            continue;
+        }
+        if (mod.startsWith("rotate(")) {
+            (usingVar ? doRotateOperation(usingVar, mod, renderModel)
+                : usingObj && doRotateOperation(usingObj, mod, renderModel));
+            continue;
+        }
+        if (mod.startsWith("scale(")) {
+            (usingVar ? doScaleOperation(usingVar, mod, renderModel)
+                : usingObj && doScaleOperation(usingObj, mod, renderModel));
+            continue;
+        }
+        if (mod.startsWith("opacity(")) {
+            (usingVar ? doOpacityOperation(usingVar, mod, renderModel)
+                : usingObj && doOpacityOperation(usingObj, mod, renderModel));
             continue;
         }
 
-        if(mod.indexOf("rotate(") == 0) {
-
-            if(usingVar) {
-                doRotateOperation(usingVar, mod, renderModel);
-            } else {
-                if(usingObj) {
-                    doRotateOperation(usingObj, mod, renderModel);
-                }
-            }
-
-            continue;
+        // Fallback: unknown mod, possibly a value assignment
+        if (usingVar) {
+            renderModel.bmDat.variables[usingVar] = mod;
+        } else {
+            console.warn("Unrecognized operation in line:", line);
         }
-
-        if(mod.indexOf("scale(") == 0) {
-
-            if(usingVar) {
-                doScaleOperation(usingVar, mod, renderModel);
-            } else {
-                if(usingObj) {
-                    doScaleOperation(usingObj, mod, renderModel);
-                }
-            }
-
-            continue;
-        }
-
-        if(mod.indexOf("opacity(") == 0) {
-
-            if(usingVar) {
-                doOpacityOperation(usingVar, mod, renderModel);
-            } else {
-                if(usingObj) {
-                    doOpacityOperation(usingObj, mod, renderModel);
-                }
-            }
-
-            continue;
-        }
-
-
-        if(usingVar) {
-            if(isNaN) {
-                renderModel.bmDat.variables[usingVar] = mod;
-            } else {
-                renderModel.bmDat.variables[usingVar] = parseFloat(mod);
-            }
-            
-        }
-
-        
     }
 }
 
