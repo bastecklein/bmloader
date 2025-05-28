@@ -633,7 +633,6 @@ function getModValue(val, renderModel, visited = new Set()) {
         ...(renderModel.bmDat.variableOverrides || {})
     };
 
-    // Recursive variable resolver with loop protection
     function resolveVar(key) {
         if (visited.has(key)) {
             console.warn(`Circular reference detected for variable: ${key}`);
@@ -645,28 +644,14 @@ function getModValue(val, renderModel, visited = new Set()) {
         let value = rawVars[key];
         if (typeof value === 'undefined') return 0;
 
-        if (typeof value === 'string' && /[+\-*/()$]/.test(value)) {
-            // If it looks like an expression, resolve it recursively
-            const exprStr = value.replace(/\$/g, '');
-            try {
-                const expr = parser.parse(exprStr);
-                const scope = new Proxy({}, {
-                    get(_, name) {
-                        return resolveVar(name);
-                    }
-                });
-                return expr.evaluate(scope);
-            } catch (e) {
-                console.warn(`Error evaluating variable expression: ${key} = ${value}`, e);
-                return 0;
-            }
+        if (typeof value === 'string') {
+            return getModValue(value, renderModel, visited);
         }
 
-        // Plain numeric or string value
         return isNaN(value) ? value : parseFloat(value);
     }
 
-    // Handle simple `$foo` or `-$foo`
+    // Handle "$foo" or "-$foo"
     const varOnlyMatch = val.match(/^(-?)\$(\w+)$/);
     if (varOnlyMatch) {
         const [, neg, varName] = varOnlyMatch;
@@ -674,13 +659,12 @@ function getModValue(val, renderModel, visited = new Set()) {
         return typeof resolved === 'number' && neg === '-' ? -resolved : resolved;
     }
 
-    // Not math-like? Return literal
     const looksLikeMath = /[+\-*/()]/.test(val) || /\$\w+/.test(val);
     if (!looksLikeMath) {
         return isNaN(val) ? val : parseFloat(val);
     }
 
-    // Evaluate full expression with $ vars
+    // Evaluate expression with full variable resolution
     try {
         const cleanExpr = val.replace(/\$/g, '');
         const expr = parser.parse(cleanExpr);
