@@ -17,7 +17,8 @@ import {
     TextureLoader,
     CapsuleGeometry,
     Shape,
-    ExtrudeGeometry
+    ExtrudeGeometry,
+    Vector2
 } from "three";
 
 const storedGeometries = {};
@@ -884,7 +885,8 @@ async function createShapeOperation(code, renderModel, currentGroup) {
             curShapeCoord.push(rawPart);
 
             if(curShapeCoord.length == 2) {
-                allShapeCoords.push([parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])]);
+                //allShapeCoords.push([parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])]);
+                allShapeCoords.push(new Vector2(parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])));
                 curShapeCoord = [];
             }
         }
