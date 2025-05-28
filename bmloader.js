@@ -18,7 +18,9 @@ import {
     CapsuleGeometry,
     Shape,
     ExtrudeGeometry,
-    Vector2
+    Vector2,
+    PlaneGeometry,
+    Color
 } from "three";
 
 import { Parser } from "expr-eval";
@@ -410,7 +412,9 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             { keyword: "cone(", func: createConeOperation },
             { keyword: "cylinder(", func: createCylinderOperation },
             { keyword: "capsule(", func: createCapsuleOperation },
-            { keyword: "shape(", func: createShapeOperation }
+            { keyword: "shape(", func: createShapeOperation },
+            { keyword: "plane(", func: createPlaneOperation },
+            { keyword: "empty()", func: async () => new Group() }
         ];
 
         let handled = false;
@@ -423,6 +427,36 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             }
         }
         if (handled) continue;
+
+        // Handle 'add($someObject)' syntax
+        if (mod.startsWith("add($") && mod.endsWith(")")) {
+            const targetName = mod.slice(5, -1);
+            const targetObj = renderModel.bmDat.variables[targetName];
+            if (targetObj && usingObj && typeof usingObj.add === 'function') {
+                usingObj.add(targetObj);
+            } else {
+                console.warn("Unable to add object to group:", targetName);
+            }
+            continue;
+        }
+
+        // Handle material override
+        if (mod.startsWith("material(")) {
+            const args = mod.substring(9, mod.length - 1).split(",").map(s => s.trim());
+            const [color, bumpMap, lightMap] = args;
+            if (usingObj && usingObj.material) {
+                usingObj.material.color = new Color(color);
+                if (bumpMap && renderModel.bmDat.textures[bumpMap]) {
+                    usingObj.material.bumpMap = renderModel.bmDat.textures[bumpMap];
+                    usingObj.material.bumpScale = 1;
+                }
+                if (lightMap && renderModel.bmDat.textures[lightMap]) {
+                    usingObj.material.lightMap = renderModel.bmDat.textures[lightMap];
+                }
+                usingObj.material.needsUpdate = true;
+            }
+            continue;
+        }
 
         // Handle transforms
         if (mod.startsWith("geotranslate(")) {
@@ -640,6 +674,66 @@ async function createTorusOperation(code,renderModel,currentGroup) {
             renderModel.add(mesh);
         }
         
+
+    }
+
+    return mesh;
+}
+
+async function createPlaneOperation(code, renderModel, currentGroup) {
+    let raw = code.replace("plane(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let mesh = null;
+
+    if(parts.length >= 2) {
+
+        const w = getModValue(parts[0], renderModel);
+        const h = getModValue(parts[1], renderModel);
+
+        let geoName = "plane." + w + "." + h + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+
+        let geometry = null;
+
+        if(storedGeometries[geoName]) {
+            geometry = storedGeometries[geoName];
+        } else {
+            geometry = new PlaneGeometry(w, h);
+
+            geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
+
+            storedGeometries[geoName] = geometry;
+        }
+
+        let material = null;
+
+        // texture
+        if(parts.length > 3) {
+            material = await getTextureMaterial(parts[3],renderModel);
+        }
+        
+
+        if(!material) {
+            if(parts.length > 2) {
+                material = new MeshLambertMaterial({
+                    color: getModValue(parts[2],renderModel)
+                });
+            } else {
+                material = new MeshLambertMaterial({
+                    color: DEF_MODEL_COLOR
+                });
+            }
+        }
+
+        mesh = new Mesh(geometry, material);
+
+        if(currentGroup) {
+            currentGroup.add(mesh);
+        } else {
+            renderModel.add(mesh);
+        }
 
     }
 
