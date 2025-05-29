@@ -583,7 +583,13 @@ async function createSphereOperation(code, renderModel, currentGroup) {
 
         // texture
         if(parts.length > 4) {
-            material = await getTextureMaterial(parts[4], renderModel);
+            let transparent = false;
+
+            if(parts[3] == "transparent" || (parts[3].length == 7 && parts[3][0] == "#")) {
+                transparent = true;
+            }
+
+            material = await getTextureMaterial(parts[4], renderModel, transparent);
         }
         
 
@@ -777,7 +783,14 @@ async function createPlaneOperation(code, renderModel, currentGroup) {
 
         // texture
         if(parts.length > 3) {
-            material = await getTextureMaterial(parts[3],renderModel);
+
+            let transparent = false;
+
+            if(parts[2] == "transparent") {
+                transparent = true;
+            }
+
+            material = await getTextureMaterial(parts[3], renderModel, transparent);
         }
         
         if(!material) {
@@ -839,7 +852,13 @@ async function createBoxOperation(code,renderModel,currentGroup) {
 
         // texture
         if(parts.length > 4) {
-            material = await getTextureMaterial(parts[4],renderModel);
+            let transparent = false;
+
+            if(parts[3] == "transparent" || (parts[3].length == 7 && parts[3][0] == "#")) {
+                transparent = true;
+            }
+
+            material = await getTextureMaterial(parts[4], renderModel, transparent);
         }
         
 
@@ -904,7 +923,13 @@ async function createConeOperation(code,renderModel,currentGroup) {
 
         // texture
         if(parts.length > 4) {
-            material = await getTextureMaterial(parts[4],renderModel);
+            let transparent = false;
+
+            if(parts[3] == "transparent" || (parts[3].length == 7 && parts[3][0] == "#")) {
+                transparent = true;
+            }
+
+            material = await getTextureMaterial(parts[4], renderModel, transparent);
         }
         
 
@@ -1028,7 +1053,13 @@ async function createShapeOperation(code, renderModel, currentGroup) {
 
     // texture
     if(parts.length > 6) {
-        material = await getTextureMaterial(parts[6], renderModel);
+        let transparent = false;
+
+        if(parts[5] == "transparent" || (parts[5].length == 7 && parts[5][0] == "#")) {
+            transparent = true;
+        }
+
+        material = await getTextureMaterial(parts[6], renderModel, transparent);
     }
         
 
@@ -1091,7 +1122,13 @@ async function createCapsuleOperation(code,renderModel,currentGroup) {
 
         // texture
         if(parts.length > 5) {
-            material = await getTextureMaterial(parts[5], renderModel);
+            let transparent = false;
+
+            if(parts[4] == "transparent" || (parts[4].length == 7 && parts[4][0] == "#")) {
+                transparent = true;
+            }
+
+            material = await getTextureMaterial(parts[5], renderModel, transparent);
         }
         
 
@@ -1158,7 +1195,13 @@ async function createCylinderOperation(code,renderModel,currentGroup) {
 
         // texture
         if(parts.length > 5) {
-            material = await getTextureMaterial(parts[5], renderModel);
+            let transparent = false;
+
+            if(parts[4] == "transparent" || (parts[4].length == 7 && parts[4][0] == "#")) {
+                transparent = true;
+            }
+
+            material = await getTextureMaterial(parts[5], renderModel, transparent);
         }
         
 
@@ -1327,7 +1370,7 @@ function doScaleOperation(id, code, renderModel) {
     }
 }
 
-async function getTextureMaterial(textureInstruction, renderModel) {
+async function getTextureMaterial(textureInstruction, renderModel, transparent) {
 
     if(!textureInstruction) {
         return null;
@@ -1337,7 +1380,8 @@ async function getTextureMaterial(textureInstruction, renderModel) {
 
     if(txInst.length == 1) {
         return new MeshLambertMaterial({
-            map: await loadTexture(txInst[0],renderModel)
+            map: await loadTexture(txInst[0],renderModel),
+            transparent: transparent
         });
     }
 
@@ -1346,7 +1390,8 @@ async function getTextureMaterial(textureInstruction, renderModel) {
     for(let i = 0; i < txInst.length; i++) {
         mapping.push(new MeshLambertMaterial({
             map: await loadTexture(txInst[i],renderModel),
-            side: DoubleSide
+            side: DoubleSide,
+            transparent: transparent
         }));
     }
     
