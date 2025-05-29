@@ -250,7 +250,7 @@ function doAnimate(model, inst, delta) {
             if(inst.renTime >= inst.speed) {
                 inst.renTime = 0;
 
-                getTextureMaterial(rawVal, model, ob.material.transparent, undefined, ob.material.depthTest).then(function(mat) {
+                getTextureMaterial(rawVal, model, ob.material.transparent, undefined, ob.material.depthWrite).then(function(mat) {
                     if(mat) {
                         ob.material = mat;
                         ob.material.needsUpdate = true;
@@ -796,15 +796,15 @@ async function createPlaneOperation(code, renderModel, currentGroup) {
         if(parts.length > 3) {
 
             let transparent = false;
-            let depthTest = true;
+            let depthWrite = true;
             const colPart = getModValue(parts[2], renderModel)
 
             if(colPart == "transparent") {
                 transparent = true;
-                depthTest = false;
+                depthWrite = false;
             }
 
-            material = await getTextureMaterial(parts[3], renderModel, transparent, colPart, depthTest);
+            material = await getTextureMaterial(parts[3], renderModel, transparent, colPart, depthWrite);
         }
         
         if(!material) {
@@ -1499,7 +1499,7 @@ function doScaleOperation(id, code, renderModel) {
     }
 }
 
-async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthTest = true) {
+async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthWrite = true) {
 
     if(!textureInstruction) {
         return null;
@@ -1512,7 +1512,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
         let mapOptions = {
             map: await loadTexture(txInst[0],renderModel),
             transparent: transparent,
-            depthTest: depthTest
+            depthWrite: depthWrite
         };
 
         if(withColor && withColor != "transparent") {
@@ -1529,7 +1529,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
             map: await loadTexture(txInst[i],renderModel),
             side: DoubleSide,
             transparent: transparent,
-            depthTest: depthTest
+            depthWrite: depthWrite
         };
 
         if(withColor && withColor != "transparent") {
