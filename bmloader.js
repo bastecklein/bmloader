@@ -20,7 +20,9 @@ import {
     ExtrudeGeometry,
     Vector2,
     PlaneGeometry,
-    Color
+    Color,
+    Vector3,
+    Euler
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -1674,7 +1676,7 @@ async function resetRenderModel(renderModel) {
 function addDecalToObject(obj, material, position = { x: 0, y: 0, z: 0 }, orientation = { x: 0, y: 0, z: 0 }, scale = { x: 1, y: 1, z: 1 }) {
     if (!obj || !material) return;
 
-    const decalGeo = new DecalGeometry(obj, position, orientation, scale);
+    const decalGeo = new DecalGeometry(obj, new Vector3(position.x, position.y, position.z), new Euler(orientation.x, orientation.y, orientation.z), new Vector3(scale.x, scale.y, scale.z));
     const decalMesh = new Mesh(decalGeo, material);
 
     obj.attach(decalMesh);
