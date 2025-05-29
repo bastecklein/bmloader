@@ -257,7 +257,7 @@ function doAnimate(model, inst, delta) {
                     } else {
                         console.warn("Texture not found for:", rawVal);
                     }
-                });
+                }, ob.material.transparent);
 
                 inst.step++;
 
