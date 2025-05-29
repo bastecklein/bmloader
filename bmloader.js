@@ -1268,7 +1268,7 @@ async function createDecalOperation(code, renderModel, currentGroup) {
         return null;
     }
 
-    const targetObjectName = parts[0].trim();
+    const targetObjectName = parts[0].trim().replace("$", "");
     let targetModel = null;
 
     if(renderModel.bmDat.variables[targetObjectName]) {
