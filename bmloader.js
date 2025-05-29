@@ -162,9 +162,7 @@ class RenderBasicModel extends Group {
     }
 
     reset() {
-        console.log("reset model!");
         resetRenderModel(this);
-        console.log("model reset!");
     }
 
     saveState() {
@@ -172,9 +170,7 @@ class RenderBasicModel extends Group {
     }
 
     restoreState() {
-        console.log("restore model state!");
         restoreModelState(this, this);
-        console.log("state restored!");
     }
 }
 
@@ -1702,10 +1698,9 @@ function saveModelState(renderModel, ob) {
     }
 
     const stateOb = {
-        rotation: ob.rotation.toArray(),
-        position: ob.position.toArray(),
-        scale: ob.scale.toArray(),
-        orientation: ob.orientation ? ob.orientation.toArray() : [0, 0, 0],
+        rotation:   { x: ob.rotation.x, y: ob.rotation.y, z: ob.rotation.z },
+        position:   { x: ob.position.x, y: ob.position.y, z: ob.position.z },
+        scale:      { x: ob.scale.x, y: ob.scale.y, z: ob.scale.z }
     };
 
     renderModel.bmDat.defaultState[ob.id] = stateOb;
@@ -1725,12 +1720,9 @@ function restoreModelState(renderModel, ob) {
     const stateOb = renderModel.bmDat.defaultState[ob.id];
 
     if(stateOb) {
-        ob.rotation.fromArray(stateOb.rotation);
-        ob.position.fromArray(stateOb.position);
-        ob.scale.fromArray(stateOb.scale);
-        if(ob.orientation) {
-            ob.orientation.fromArray(stateOb.orientation);
-        }
+        ob.rotation.set(stateOb.rotation.x, stateOb.rotation.y, stateOb.rotation.z);
+        ob.position.set(stateOb.position.x, stateOb.position.y, stateOb.position.z);
+        ob.scale.set(stateOb.scale.x, stateOb.scale.y, stateOb.scale.z);
     }
 
     if(ob.children && ob.children.length > 0) {
