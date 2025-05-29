@@ -1283,7 +1283,7 @@ async function createDecalOperation(code, renderModel, currentGroup) {
         return;
     }
 
-    const decalMaterial = await getTextureMaterial(getModValue(parts[1], renderModel), renderModel, true);
+    const decalMaterial = await getTextureMaterial(parts[1], renderModel, true);
 
     if(!decalMaterial) {
         console.warn("No valid decal material provided in:", code);
