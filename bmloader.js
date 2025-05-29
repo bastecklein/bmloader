@@ -148,7 +148,8 @@ class RenderBasicModel extends Group {
             animations: {},
             animation: null,
             _scriptLines: null,
-            lastAnimation: null
+            lastAnimation: null,
+            defaultState: {}
         };
     }
 
@@ -161,7 +162,19 @@ class RenderBasicModel extends Group {
     }
 
     reset() {
+        console.log("reset model!");
         resetRenderModel(this);
+        console.log("model reset!");
+    }
+
+    saveState() {
+        saveModelState(this, this);
+    }
+
+    restoreState() {
+        console.log("restore model state!");
+        restoreModelState(this, this);
+        console.log("state restored!");
     }
 }
 
@@ -210,12 +223,17 @@ function parseAnimationInstructions(animation) {
     }
 }
 
+/**
+ * Runs the current model animation script
+ * @param {RenderBasicModel} model The model to animate
+ * @param {number} delta The time delta since the last frame
+ */
 function animateModel(model, delta) {
     if(!model.bmDat.animations || !model.bmDat.animation) {
 
         if(model.bmDat.lastAnimation) {
             model.bmDat.lastAnimation = null;
-            resetRenderModel(model);
+            model.restoreState();
         }
 
         return;
@@ -223,7 +241,15 @@ function animateModel(model, delta) {
 
     model.bmDat.lastAnimation = model.bmDat.animation;
 
+    if(!model.bmDat.animation) {
+        return;
+    }
+
     const animation = model.bmDat.animations[model.bmDat.animation];
+
+    if(!animation) {
+        return;
+    }
 
     for(let i = 0; i < animation.length; i++) {
         const inst = animation[i];
@@ -363,6 +389,8 @@ async function loadBM(modelData, options) {
         const line = lines[i];
         await negotiateInstructionLine(line, renderModel, currentGroup);
     }
+
+    renderModel.saveState();
 
     return renderModel;
 }
@@ -1650,6 +1678,50 @@ function rebuildBM(obj) {
         bm.textures[txName] = rebuildStandardObject(tx, ModelTexture);
     }
     return bm;
+}
+
+function saveModelState(renderModel, ob) {
+    if(!renderModel || !renderModel.bmDat || !ob || !ob.id) {
+        return;
+    }
+
+    const stateOb = {
+        rotation: ob.rotation.toArray(),
+        position: ob.position.toArray(),
+        scale: ob.scale.toArray(),
+        orientation: ob.orientation ? ob.orientation.toArray() : [0, 0, 0],
+    };
+
+    renderModel.defaultState[ob.id] = stateOb;
+
+    if(ob.children && ob.children.length > 0) {
+        for(let i = 0; i < ob.children.length; i++) {
+            saveModelState(renderModel, ob.children[i]);
+        }
+    }
+}
+
+function restoreModelState(renderModel, ob) {
+    if(!renderModel || !renderModel.bmDat || !ob || !ob.id) {
+        return;
+    }
+
+    const stateOb = renderModel.defaultState[ob.id];
+
+    if(stateOb) {
+        ob.rotation.fromArray(stateOb.rotation);
+        ob.position.fromArray(stateOb.position);
+        ob.scale.fromArray(stateOb.scale);
+        if(ob.orientation) {
+            ob.orientation.fromArray(stateOb.orientation);
+        }
+    }
+
+    if(ob.children && ob.children.length > 0) {
+        for(let i = 0; i < ob.children.length; i++) {
+            restoreModelState(renderModel, ob.children[i]);
+        }
+    }
 }
 
 // Reset the model to its original .bm state
