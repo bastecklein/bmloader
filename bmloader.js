@@ -236,7 +236,23 @@ function animateModel(model, delta) {
             model.restoreState();
         }
 
+        if(model.bmDat.animations) {
+            for(let aniName in model.bmDat.animations) {
+                const ani = model.bmDat.animations[aniName];
+                ani.step = 0;
+            }
+        }
+
         return;
+    }
+
+    for(let aniName in model.bmDat.animations) {
+        if(aniName == model.bmDat.animation) {
+            continue;
+        }
+        
+        const ani = model.bmDat.animations[aniName];
+        ani.step = 0;
     }
 
     model.bmDat.lastAnimation = model.bmDat.animation;
