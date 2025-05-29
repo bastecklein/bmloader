@@ -584,12 +584,13 @@ async function createSphereOperation(code, renderModel, currentGroup) {
         // texture
         if(parts.length > 4) {
             let transparent = false;
+            const colPart = getModValue(parts[3], renderModel)
 
-            if(parts[3] == "transparent" || (parts[3].length == 7 && parts[3][0] == "#")) {
+            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
                 transparent = true;
             }
 
-            material = await getTextureMaterial(parts[4], renderModel, transparent);
+            material = await getTextureMaterial(parts[4], renderModel, transparent, colPart);
         }
         
 
@@ -785,12 +786,13 @@ async function createPlaneOperation(code, renderModel, currentGroup) {
         if(parts.length > 3) {
 
             let transparent = false;
+            const colPart = getModValue(parts[2], renderModel)
 
-            if(parts[2] == "transparent") {
+            if(colPart == "transparent") {
                 transparent = true;
             }
 
-            material = await getTextureMaterial(parts[3], renderModel, transparent);
+            material = await getTextureMaterial(parts[3], renderModel, transparent, colPart);
         }
         
         if(!material) {
@@ -853,12 +855,13 @@ async function createBoxOperation(code,renderModel,currentGroup) {
         // texture
         if(parts.length > 4) {
             let transparent = false;
+            const colPart = getModValue(parts[3], renderModel)
 
-            if(parts[3] == "transparent" || (parts[3].length == 7 && parts[3][0] == "#")) {
+            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
                 transparent = true;
             }
 
-            material = await getTextureMaterial(parts[4], renderModel, transparent);
+            material = await getTextureMaterial(parts[4], renderModel, transparent, colPart);
         }
         
 
@@ -924,12 +927,13 @@ async function createConeOperation(code,renderModel,currentGroup) {
         // texture
         if(parts.length > 4) {
             let transparent = false;
+            const colPart = getModValue(parts[3], renderModel);
 
-            if(parts[3] == "transparent" || (parts[3].length == 7 && parts[3][0] == "#")) {
+            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
                 transparent = true;
             }
 
-            material = await getTextureMaterial(parts[4], renderModel, transparent);
+            material = await getTextureMaterial(parts[4], renderModel, transparent, colPart);
         }
         
 
@@ -1054,12 +1058,13 @@ async function createShapeOperation(code, renderModel, currentGroup) {
     // texture
     if(parts.length > 6) {
         let transparent = false;
+        const colPart = getModValue(parts[5], renderModel);
 
-        if(parts[5] == "transparent" || (parts[5].length == 7 && parts[5][0] == "#")) {
+        if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
             transparent = true;
         }
 
-        material = await getTextureMaterial(parts[6], renderModel, transparent);
+        material = await getTextureMaterial(parts[6], renderModel, transparent, colPart);
     }
         
 
@@ -1123,12 +1128,13 @@ async function createCapsuleOperation(code,renderModel,currentGroup) {
         // texture
         if(parts.length > 5) {
             let transparent = false;
+            const colPart = getModValue(parts[4], renderModel);
 
-            if(parts[4] == "transparent" || (parts[4].length == 7 && parts[4][0] == "#")) {
+            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
                 transparent = true;
             }
 
-            material = await getTextureMaterial(parts[5], renderModel, transparent);
+            material = await getTextureMaterial(parts[5], renderModel, transparent, colPart);
         }
         
 
@@ -1196,12 +1202,13 @@ async function createCylinderOperation(code,renderModel,currentGroup) {
         // texture
         if(parts.length > 5) {
             let transparent = false;
+            const colPart = getModValue(parts[4], renderModel);
 
-            if(parts[4] == "transparent" || (parts[4].length == 7 && parts[4][0] == "#")) {
+            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
                 transparent = true;
             }
 
-            material = await getTextureMaterial(parts[5], renderModel, transparent);
+            material = await getTextureMaterial(parts[5], renderModel, transparent, colPart);
         }
         
 
@@ -1370,7 +1377,7 @@ function doScaleOperation(id, code, renderModel) {
     }
 }
 
-async function getTextureMaterial(textureInstruction, renderModel, transparent) {
+async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null) {
 
     if(!textureInstruction) {
         return null;
@@ -1379,20 +1386,33 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent) 
     const txInst = textureInstruction.split("|");
 
     if(txInst.length == 1) {
-        return new MeshLambertMaterial({
+
+        let mapOptions = {
             map: await loadTexture(txInst[0],renderModel),
             transparent: transparent
-        });
+        };
+
+        if(withColor && withColor != "transparent") {
+            mapOptions.color = withColor;
+        }
+
+        return new MeshLambertMaterial(mapOptions);
     }
 
     let mapping = [];
 
     for(let i = 0; i < txInst.length; i++) {
-        mapping.push(new MeshLambertMaterial({
+        let mapOptions = {
             map: await loadTexture(txInst[i],renderModel),
             side: DoubleSide,
             transparent: transparent
-        }));
+        };
+
+        if(withColor && withColor != "transparent") {
+            mapOptions.color = withColor;
+        }
+
+        mapping.push(new MeshLambertMaterial(mapOptions));
     }
     
     if(mapping.length == 0) {
