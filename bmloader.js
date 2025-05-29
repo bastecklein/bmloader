@@ -23,6 +23,8 @@ import {
     Color
 } from "three";
 
+import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
+
 import { Parser } from "expr-eval";
 
 const storedGeometries = {};
@@ -457,7 +459,8 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             { keyword: "capsule(", func: createCapsuleOperation },
             { keyword: "shape(", func: createShapeOperation },
             { keyword: "plane(", func: createPlaneOperation },
-            { keyword: "empty()", func: createGroupOperation }
+            { keyword: "empty()", func: createGroupOperation },
+            { keyword: "decal(", func: createDecalOperation }
         ];
 
         let handled = false;
@@ -512,7 +515,7 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             continue;
         }
 
-        // Handle transforms
+        // Handle transforms.
         if (mod.startsWith("geotranslate(")) {
             handleGeoTranslate(mod, renderModel);
             continue;
@@ -535,6 +538,11 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
         if (mod.startsWith("opacity(")) {
             (usingVar ? doOpacityOperation(usingVar, mod, renderModel)
                 : usingObj && doOpacityOperation(usingObj, mod, renderModel));
+            continue;
+        }
+        if (mod.startsWith("orientation(")) {
+            (usingVar ? doOrientationOperation(usingVar, mod, renderModel)
+                : usingObj && doOrientationOperation(usingObj, mod, renderModel));
             continue;
         }
 
@@ -1250,6 +1258,89 @@ function handleGeoTranslate(code, renderModel) {
     }
 }
 
+async function createDecalOperation(code, renderModel, currentGroup) {
+    let raw = code.replace("decal(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    if(parts.length < 1) {
+        return null;
+    }
+
+    const targetObjectName = parts[0].trim();
+    let targetModel = null;
+
+    if(renderModel.bmDat.variables[targetObjectName]) {
+        targetModel = renderModel.bmDat.variables[targetObjectName];
+    }
+
+    if(!targetModel || !targetModel.position) {
+        console.warn("Invalid object for decal operation:", targetObjectName);
+        console.warn("Code:", code);
+        console.warn("Render Model:", renderModel);
+        console.warn(targetModel);
+        return;
+    }
+
+    const decalMaterial = await getTextureMaterial(getModValue(parts[1], renderModel), renderModel, true);
+
+    if(!decalMaterial) {
+        console.warn("No valid decal material provided in:", code);
+        return null;
+    }
+
+    let pX = 0;
+    let pY = 0;
+    let pZ = 0;
+
+    let oX = 0;
+    let oY = 0;
+    let oZ = 0;
+
+    let sX = 1;
+    let sY = 1;
+    let sZ = 1;
+
+    if(parts.length > 2) {
+        pX = getModValue(parts[2], renderModel);
+    }
+
+    if(parts.length > 3) {
+        pY = getModValue(parts[3], renderModel);
+    }
+
+    if(parts.length > 4) {
+        pZ = getModValue(parts[4], renderModel);
+    }
+
+    if(parts.length > 5) {
+        oX = getModValue(parts[5], renderModel);
+    }
+
+    if(parts.length > 6) {
+        oY = getModValue(parts[6], renderModel);
+    }
+
+    if(parts.length > 7) {
+        oZ = getModValue(parts[7], renderModel);
+    }
+
+    if(parts.length > 8) {
+        sX = getModValue(parts[8], renderModel);
+    }
+
+    if(parts.length > 9) {
+        sY = getModValue(parts[9], renderModel);
+    }
+
+    if(parts.length > 10) {
+        sZ = getModValue(parts[10], renderModel);
+    }
+
+    return addDecalToObject(targetModel, decalMaterial, { x: pX, y: pY, z: pZ }, { x: oX, y: oY, z: oZ }, { x: sX, y: sY, z: sZ });
+}
+
 function doPositionOperation(id, code, renderModel) {
 
     let obid = id;
@@ -1278,6 +1369,33 @@ function doPositionOperation(id, code, renderModel) {
         const z = getModValue(parts[2],renderModel);
 
         obid.position.set(x, y, z);
+    }
+}
+
+function doOrientationOperation(id,code,renderModel) {
+
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid || obid.orientation == undefined) {
+        return;
+    }
+
+    let raw = code.replace("orientation(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    if(parts.length >= 3) {
+
+        const x = getModValue(parts[0], renderModel);
+        const y = getModValue(parts[1], renderModel);
+        const z = getModValue(parts[2], renderModel);
+
+        obid.orientation.set(x, y, z);
     }
 }
 
@@ -1551,6 +1669,17 @@ async function resetRenderModel(renderModel) {
         renderModel.add(currentGroup.grp);
         currentGroup.grp = null;
     }
+}
+
+function addDecalToObject(obj, material, position = { x: 0, y: 0, z: 0 }, orientation = { x: 0, y: 0, z: 0 }, scale = { x: 1, y: 1, z: 1 }) {
+    if (!obj || !material) return;
+
+    const decalGeo = new DecalGeometry(obj, position, orientation, scale);
+    const decalMesh = new Mesh(decalGeo, material);
+
+    obj.attach(decalMesh);
+
+    return decalMesh;
 }
 
 export {  BMLoader, BasicModel, ModelTexture, RenderBasicModel };
