@@ -1708,7 +1708,7 @@ function saveModelState(renderModel, ob) {
         orientation: ob.orientation ? ob.orientation.toArray() : [0, 0, 0],
     };
 
-    renderModel.defaultState[ob.id] = stateOb;
+    renderModel.bmDat.defaultState[ob.id] = stateOb;
 
     if(ob.children && ob.children.length > 0) {
         for(let i = 0; i < ob.children.length; i++) {
@@ -1722,7 +1722,7 @@ function restoreModelState(renderModel, ob) {
         return;
     }
 
-    const stateOb = renderModel.defaultState[ob.id];
+    const stateOb = renderModel.bmDat.defaultState[ob.id];
 
     if(stateOb) {
         ob.rotation.fromArray(stateOb.rotation);
