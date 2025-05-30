@@ -27,7 +27,8 @@ import {
     MeshPhongMaterial,
     MeshStandardMaterial,
     MeshToonMaterial,
-    Color
+    Color,
+    FrontSide
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -1651,10 +1652,14 @@ async function createLatheOperation(code, renderModel, currentGroup, loader) {
     return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial);
 }
 
-async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, txPart, useMaterial, depthWrite = true, side = undefined) {
+async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, txPart, useMaterial, depthWrite = true, side = FrontSide) {
     
     if(!geometry) {
         return null;
+    }
+
+    if(!side) {
+        side = FrontSide;
     }
     
     let mesh = null;
