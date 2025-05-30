@@ -20,9 +20,14 @@ import {
     ExtrudeGeometry,
     Vector2,
     PlaneGeometry,
-    Color,
     Vector3,
-    Euler
+    Euler,
+    MeshBasicMaterial,
+    LatheGeometry,
+    MeshPhongMaterial,
+    MeshStandardMaterial,
+    MeshToonMaterial,
+    Color
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -41,8 +46,11 @@ let threeLoader = null;
 let remoteModels = {};
 
 class BMLoader extends Loader {
-    constructor(manager) {
+
+    constructor(manager, options) {
         super(manager);
+
+        this.defMaterial = options.defMaterial || "lambert";
     }
 
     load(url, onLoad, onProgress, onError) {
@@ -56,7 +64,7 @@ class BMLoader extends Loader {
             if(url.script && url.id) {
                 modelDat = rebuildBM(url);
 
-                loadBM(modelDat, null).then(function(renderModel) {
+                loadBM(modelDat, null, scope).then(function(renderModel) {
                     onLoad(renderModel);
                 });
 
@@ -66,7 +74,7 @@ class BMLoader extends Loader {
             if(url.json && url.json.script && url.json.id) {
                 modelDat = rebuildBM(url.json);
 
-                loadBM(modelDat, url).then(function(renderModel) {
+                loadBM(modelDat, url, scope).then(function(renderModel) {
                     onLoad(renderModel);
                 });
 
@@ -83,7 +91,7 @@ class BMLoader extends Loader {
         }
 
         if(remoteModels[url]) {
-            loadBM(remoteModels[url], options).then(function(renderModel) {
+            loadBM(remoteModels[url], options, scope).then(function(renderModel) {
                 onLoad(renderModel);
             });
 
@@ -98,7 +106,7 @@ class BMLoader extends Loader {
             modelDat = rebuildBM(data);
             remoteModels[url] = modelDat;
 
-            loadBM(modelDat, options).then(function(renderModel) {
+            loadBM(modelDat, options, scope).then(function(renderModel) {
                 onLoad(renderModel);
             });
 
@@ -288,7 +296,7 @@ function doAnimate(model, inst, delta) {
             if(inst.renTime >= inst.speed) {
                 inst.renTime = 0;
 
-                getTextureMaterial(rawVal, model, ob.material.transparent, undefined, ob.material.depthWrite).then(function(mat) {
+                getTextureMaterial(rawVal, model, ob.material.transparent, undefined, ob.material.depthWrite, ob.material.type).then(function(mat) {
                     if(mat) {
                         ob.material = mat;
                         ob.material.needsUpdate = true;
@@ -371,9 +379,10 @@ function doAnimate(model, inst, delta) {
  * 
  * @param {BasicModel} modelData 
  * @param {*} options 
+ * @param {BMLoader} loader
  * @returns RenderBasicModel
  */
-async function loadBM(modelData, options) {
+async function loadBM(modelData, options, loader) {
 
     const renderModel = new RenderBasicModel(modelData);
 
@@ -389,8 +398,6 @@ async function loadBM(modelData, options) {
         grp: null
     };
 
-   
-
     let code = modelData.script.trim();
     code = code.replaceAll(" ", "");
     code = code.replaceAll("\n", ";");
@@ -399,7 +406,7 @@ async function loadBM(modelData, options) {
 
     for(let i = 0; i < lines.length; i++) {
         const line = lines[i];
-        await negotiateInstructionLine(line, renderModel, currentGroup);
+        await negotiateInstructionLine(line, renderModel, currentGroup, loader);
     }
 
     renderModel.saveState();
@@ -407,7 +414,14 @@ async function loadBM(modelData, options) {
     return renderModel;
 }
 
-async function negotiateInstructionLine(line, renderModel, currentGroup) {
+
+/**
+ * @param {String} line The instruction line to parse
+ * @param {RenderBasicModel} renderModel The model to modify
+ * @param {Object} currentGroup The current group context for grouping operations
+ * @param {BMLoader} loader The loader instance for texture loading
+ */
+async function negotiateInstructionLine(line, renderModel, currentGroup, loader) {
     if (line.trim().startsWith("//") || !line.trim()) return;
 
     // Store original instruction
@@ -502,13 +516,14 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
             { keyword: "shape(", func: createShapeOperation },
             { keyword: "plane(", func: createPlaneOperation },
             { keyword: "empty()", func: createGroupOperation },
-            { keyword: "decal(", func: createDecalOperation }
+            { keyword: "decal(", func: createDecalOperation },
+            { keyword: "lathe(", func: createLatheOperation }
         ];
 
         let handled = false;
         for (const op of ops) {
             if (mod.startsWith(op.keyword)) {
-                usingObj = await op.func(mod, renderModel, currentGroup.grp);
+                usingObj = await op.func(mod, renderModel, currentGroup.grp, loader);
                 if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
                 handled = true;
                 break;
@@ -530,6 +545,9 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
 
         // Handle material override
         if (mod.startsWith("material(")) {
+            (usingVar ? doMaterialOperation(usingVar, mod, renderModel)
+                : usingObj && doMaterialOperation(usingObj, mod, renderModel));
+            /*
             const args = mod.substring(9, mod.length - 1).split(",").map(s => s.trim());
             const [color, bumpMap, lightMap] = args;
             if (usingObj && usingObj.material) {
@@ -542,7 +560,7 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
                     usingObj.material.lightMap = renderModel.bmDat.textures[getModValue(lightMap, renderModel)];
                 }
                 usingObj.material.needsUpdate = true;
-            }
+            }*/
             continue;
         }
 
@@ -597,17 +615,17 @@ async function negotiateInstructionLine(line, renderModel, currentGroup) {
     }
 }
 
-async function createSphereOperation(code, renderModel, currentGroup) {
+async function createSphereOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("sphere(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
-
     let rad = 1;
     let wSegs = 1;
     let hSegs = 1;
+
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length >= 3) {
 
@@ -628,48 +646,19 @@ async function createSphereOperation(code, renderModel, currentGroup) {
 
             storedGeometries[geoName] = geometry;
         }
-        
-        let material = null;
 
-        // texture
-        if(parts.length > 4) {
-            let transparent = false;
-            const colPart = getModValue(parts[3], renderModel)
-
-            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
-                transparent = true;
-            }
-
-            material = await getTextureMaterial(parts[4], renderModel, transparent, colPart);
-        }
-        
-
-        if(!material) {
-            if(parts.length > 3) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[3], renderModel)
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
-                });
-            }
+        if(parts.length > 5) {
+            useMaterial = parts[5].trim();
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
-        }
-
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial);
     }
 
-    return mesh;
+    return null;
 }
 
-function createGroupOperation(code, renderModel, currentGroup) {
+// eslint-disable-next-line no-unused-vars
+function createGroupOperation(code, renderModel, currentGroup, loader) {
     const group = new Group();
 
     if(currentGroup) {
@@ -735,18 +724,18 @@ function getModValue(val, renderModel, visited = new Set()) {
     }
 }
 
-async function createTorusOperation(code,renderModel,currentGroup) {
+async function createTorusOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("torus(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
-
     let rad = 1;
     let tube = 1;
     let radSegs = 1;
     let tubeSegs = 1;
+
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length >= 4) {
 
@@ -769,47 +758,23 @@ async function createTorusOperation(code,renderModel,currentGroup) {
             storedGeometries[geoName] = geometry;
         }
 
-        let material = null;
-
-        // texture
-        if(parts.length > 5) {
-            material = await getTextureMaterial(parts[5],renderModel);
-        }
-        
-
-        if(!material) {
-            if(parts.length > 4) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[4],renderModel)
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
-                });
-            }
+        if(parts.length > 6) {
+            useMaterial = parts[6].trim();
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
-        }
-        
-
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[4] || null, parts[5] || null, useMaterial);
     }
 
-    return mesh;
+    return null;
 }
 
-async function createPlaneOperation(code, renderModel, currentGroup) {
+async function createPlaneOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("plane(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length >= 2) {
 
@@ -830,57 +795,34 @@ async function createPlaneOperation(code, renderModel, currentGroup) {
             storedGeometries[geoName] = geometry;
         }
 
-        let material = null;
+        let depthWrite = true;
+        let side = DoubleSide;
 
-        // texture
-        if(parts.length > 3) {
-
-            let transparent = false;
-            let depthWrite = true;
-            const colPart = getModValue(parts[2], renderModel)
-
-            if(colPart == "transparent") {
-                transparent = true;
-                depthWrite = false;
-            }
-
-            material = await getTextureMaterial(parts[3], renderModel, transparent, colPart, depthWrite);
-        }
-        
-        if(!material) {
-            if(parts.length > 2) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[2],renderModel),
-                    side: DoubleSide
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR,
-                    side: DoubleSide
-                });
-            }
+        if(parts[2] && parts[2] == "transparent") {
+            depthWrite = false;
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
+        if(parts[3]) {
+            side = undefined;
         }
 
+        if(parts.length > 4) {
+            useMaterial = parts[4].trim();
+        }
+
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[2] || null, parts[3] || null, useMaterial, depthWrite, side);
     }
 
-    return mesh;
+    return null;
 }
 
-async function createBoxOperation(code,renderModel,currentGroup) {
+async function createBoxOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("box(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length >= 3) {
 
@@ -902,60 +844,29 @@ async function createBoxOperation(code,renderModel,currentGroup) {
             storedGeometries[geoName] = geometry;
         }
 
-        let material = null;
-
-        // texture
-        if(parts.length > 4) {
-            let transparent = false;
-            const colPart = getModValue(parts[3], renderModel)
-
-            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
-                transparent = true;
-            }
-
-            material = await getTextureMaterial(parts[4], renderModel, transparent, colPart);
-        }
-        
-
-        if(!material) {
-            if(parts.length > 3) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[3],renderModel)
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
-                });
-            }
+        if(parts.length > 5) {
+            useMaterial = parts[5].trim();
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
-        }
-
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial, true, undefined);
     }
 
-    return mesh;
+    return true;
 }
 
-async function createConeOperation(code,renderModel,currentGroup) {
+async function createConeOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("cone(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
+    let useMaterial = loader.defMaterial || "lambert";
 
     let rad = 1;
     let height = 1;
     let segs = 1;
 
     if(parts.length >= 3) {
-
         rad = getModValue(parts[0],renderModel);
         height = getModValue(parts[1],renderModel);
         segs = getModValue(parts[2],renderModel);
@@ -974,48 +885,17 @@ async function createConeOperation(code,renderModel,currentGroup) {
             storedGeometries[geoName] = geometry;
         }
 
-        let material = null;
-
-        // texture
-        if(parts.length > 4) {
-            let transparent = false;
-            const colPart = getModValue(parts[3], renderModel);
-
-            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
-                transparent = true;
-            }
-
-            material = await getTextureMaterial(parts[4], renderModel, transparent, colPart);
-        }
-        
-
-        if(!material) {
-            if(parts.length > 3) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[3],renderModel)
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
-                });
-            }
+        if(parts.length > 5) {
+            useMaterial = parts[5].trim();
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
-        }
-        
-
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial, true, undefined);
     }
 
-    return mesh;
+    return null;
 }
 
-async function createShapeOperation(code, renderModel, currentGroup) {
+async function createShapeOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("shape(","");
     raw = raw.replace(")","");
 
@@ -1029,6 +909,8 @@ async function createShapeOperation(code, renderModel, currentGroup) {
     let bevSize = 1;
     let bevThick = 1;
     let bevOffset = 0;
+
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length < 1) {
         console.warn("Shape definition must have at least 1 point.");
@@ -1047,7 +929,6 @@ async function createShapeOperation(code, renderModel, currentGroup) {
             curShapeCoord.push(rawPart);
 
             if(curShapeCoord.length == 2) {
-                //allShapeCoords.push([parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])]);
                 allShapeCoords.push(new Vector2(parseFloat(curShapeCoord[0]), parseFloat(curShapeCoord[1])));
                 curShapeCoord = [];
             }
@@ -1101,60 +982,28 @@ async function createShapeOperation(code, renderModel, currentGroup) {
         };
 
         geometry = new ExtrudeGeometry(shape, extrudeSettings);
+        geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
+        storedGeometries[geoName] = geometry;
     }
 
-    let mesh = null;
-
-    let material = null;
-
-    // texture
-    if(parts.length > 6) {
-        let transparent = false;
-        const colPart = getModValue(parts[5], renderModel);
-
-        if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
-            transparent = true;
-        }
-
-        material = await getTextureMaterial(parts[6], renderModel, transparent, colPart);
-    }
-        
-
-    if(!material) {
-        if(parts.length > 5) {
-            material = new MeshLambertMaterial({
-                color: getModValue(parts[5],renderModel)
-            });
-        } else {
-            material = new MeshLambertMaterial({
-                color: DEF_MODEL_COLOR
-            });
-        }
+    if(parts.length > 7) {
+        useMaterial = parts[7].trim();
     }
 
-    mesh = new Mesh(geometry, material);
-
-    if(currentGroup) {
-        currentGroup.add(mesh);
-    } else {
-        renderModel.add(mesh);
-    }
-
-    return mesh;
+    return await setupNewMaterial(renderModel, geometry, currentGroup, parts[5] || null, parts[6] || null, useMaterial);
 }
 
-async function createCapsuleOperation(code,renderModel,currentGroup) {
+async function createCapsuleOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("capsule(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
-
     let rad = 1;
     let height = 1;
     let seg = 1;
     let radseg = 1;
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length >= 4) {
 
@@ -1175,58 +1024,28 @@ async function createCapsuleOperation(code,renderModel,currentGroup) {
             storedGeometries[geoName] = geometry;
         }
 
-        let material = null;
-
-        // texture
-        if(parts.length > 5) {
-            let transparent = false;
-            const colPart = getModValue(parts[4], renderModel);
-
-            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
-                transparent = true;
-            }
-
-            material = await getTextureMaterial(parts[5], renderModel, transparent, colPart);
-        }
-        
-
-        if(!material) {
-            if(parts.length > 4) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[4],renderModel)
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
-                });
-            }
+        if(parts.length > 6) {
+            useMaterial = parts[6].trim();
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
-        }
-        
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[4] || null, parts[5] || null, useMaterial);
     }
 
-    return mesh;
+    return null;
 }
 
-async function createCylinderOperation(code,renderModel,currentGroup) {
+async function createCylinderOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("cylinder(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
 
-    let mesh = null;
 
     let radTop = 1;
     let radBottom = 1;
     let height = 1;
     let segs = 1;
+    let useMaterial = loader.defMaterial || "lambert";
 
     if(parts.length >= 4) {
 
@@ -1249,44 +1068,14 @@ async function createCylinderOperation(code,renderModel,currentGroup) {
             storedGeometries[geoName] = geometry;
         }
 
-        let material = null;
-
-        // texture
-        if(parts.length > 5) {
-            let transparent = false;
-            const colPart = getModValue(parts[4], renderModel);
-
-            if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
-                transparent = true;
-            }
-
-            material = await getTextureMaterial(parts[5], renderModel, transparent, colPart);
-        }
-        
-
-        if(!material) {
-            if(parts.length > 4) {
-                material = new MeshLambertMaterial({
-                    color: getModValue(parts[4],renderModel)
-                });
-            } else {
-                material = new MeshLambertMaterial({
-                    color: DEF_MODEL_COLOR
-                });
-            }
+        if(parts.length > 6) {
+            useMaterial = parts[6].trim();
         }
 
-        mesh = new Mesh(geometry, material);
-
-        if(currentGroup) {
-            currentGroup.add(mesh);
-        } else {
-            renderModel.add(mesh);
-        }
-        
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[4] || null, parts[5] || null, useMaterial);
     }
 
-    return mesh;
+    return null;
 }
 
 function handleGeoTranslate(code, renderModel) {
@@ -1302,7 +1091,8 @@ function handleGeoTranslate(code, renderModel) {
     }
 }
 
-async function createDecalOperation(code, renderModel, currentGroup) {
+// eslint-disable-next-line no-unused-vars
+async function createDecalOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("decal(","");
     raw = raw.replace(")","");
 
@@ -1539,7 +1329,7 @@ function doScaleOperation(id, code, renderModel) {
     }
 }
 
-async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthWrite = true) {
+async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthWrite = true, useMaterial = "lambert") {
 
     if(!textureInstruction) {
         return null;
@@ -1559,7 +1349,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
             mapOptions.color = withColor;
         }
 
-        return new MeshLambertMaterial(mapOptions);
+        return new getMaterialClass(useMaterial)(mapOptions);
     }
 
     let mapping = [];
@@ -1576,7 +1366,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
             mapOptions.color = withColor;
         }
 
-        mapping.push(new MeshLambertMaterial(mapOptions));
+        mapping.push(new getMaterialClass(useMaterial)(mapOptions));
     }
     
     if(mapping.length == 0) {
@@ -1766,6 +1556,242 @@ function addDecalToObject(obj, material, position = { x: 0, y: 0, z: 0 }, orient
     obj.attach(decalMesh);
 
     return decalMesh;
+}
+
+function getMaterialClass(matname) {
+    if(matname == "lambert" || matname == "MeshLambertMaterial") {
+        return MeshLambertMaterial;
+    }
+
+    if(matname == "phong" || matname == "MeshPhongMaterial") {
+        return MeshPhongMaterial;
+    }
+
+    if(matname == "standard" || matname == "MeshStandardMaterial") {
+        return MeshStandardMaterial;
+    }
+
+    if(matname == "toon" || matname == "MeshToonMaterial") {
+        return MeshToonMaterial;
+    }
+
+    return MeshBasicMaterial;
+}
+
+async function createLatheOperation(code, renderModel, currentGroup, loader) {
+    let raw = code.replace("shape(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    if(parts.length < 1) {
+        console.warn("Lathe definition must have at least 1 point.");
+        return null;
+    }
+
+    let useMaterial = loader.defMaterial || "lambert";
+
+    const points = [];
+    let curCoord = [];
+    let shapeName = "";
+
+    let phiLength = Math.PI * 2;
+    let segments = 12;
+
+    const latheCoords = getModValue(parts[0], renderModel).split("|");
+
+    for(let i = 0; i < latheCoords.length; i++) {
+        let part = latheCoords[i].trim();
+
+        if(part.length > 0) {
+            const rawPart = getModValue(part, renderModel);
+            shapeName += rawPart + ".";
+
+            curCoord.push(rawPart);
+
+            if(curCoord.length == 2) {
+                points.push(new Vector2(parseFloat(curCoord[0]), parseFloat(curCoord[1])));
+                curCoord = [];
+            }
+        }
+    }
+
+    if(points.length < 2) {
+        console.warn("Lathe definition must have at least 2 points.");
+        return null;
+    }
+
+    if(parts.length > 1) {
+        phiLength = getModValue(parts[1], renderModel);
+    }
+
+    if(parts.length > 2) {
+        segments = getModValue(parts[2], renderModel);
+    }
+    
+    let geoName = "lathe." + phiLength + "." + segments + "." + shapeName + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+    let geometry = null;
+
+    if(storedGeometries[geoName]) {
+        geometry = storedGeometries[geoName];
+    } else {
+        geometry = new LatheGeometry(points, segments, 0, phiLength);
+        geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
+        storedGeometries[geoName] = geometry;
+    }
+
+    if(parts.length > 5) {
+        useMaterial = parts[5].trim();
+    }
+
+    return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial);
+}
+
+async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, txPart, useMaterial, depthWrite = true, side = undefined) {
+    
+    if(!geometry) {
+        return null;
+    }
+    
+    let mesh = null;
+    let material = null;
+
+    // texture
+    if(txPart && txPart.indexOf("$") == 0) {
+        let transparent = false;
+
+        if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
+            transparent = true;
+        }
+
+        material = await getTextureMaterial(txPart, renderModel, transparent, colPart, depthWrite, useMaterial);
+    }
+        
+    if(!material) {
+        if(colPart && colPart.length == 7 && colPart[0] == "#") {
+            material = new getMaterialClass(useMaterial)({
+                color: getModValue(colPart, renderModel),
+                side: side
+            });
+        } else {
+            material = new getMaterialClass(useMaterial)({
+                color: DEF_MODEL_COLOR,
+                side: side
+            });
+        }
+    }
+
+    mesh = new Mesh(geometry, material);
+
+    if(currentGroup) {
+        currentGroup.add(mesh);
+    } else {
+        renderModel.add(mesh);
+    }
+
+    return mesh;
+}
+
+async function doMaterialOperation(id, code, renderModel) {
+
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid || !obid.position || !obid.material) {
+        console.warn("Invalid object for material operation:", id);
+        console.warn("Code:", code);
+        console.warn("Render Model:", renderModel);
+        console.warn(obid);
+        return;
+    }
+
+    let raw = code.replace("material(","");
+    raw = raw.replace(")","");
+
+    let color = undefined;
+    let shininess = obid.material.shininess || undefined;
+
+    let metalness = undefined;
+    let roughness = undefined;
+
+    let lightMap = undefined;
+    let bumpMap = undefined;
+
+    const parts = raw.split(",");
+
+    if(parts.length >= 1) {
+        color = getModValue(parts[0], renderModel);
+
+        if(!color || color.length < 7 || color[0] != "#") {
+            color = undefined;
+        }
+    }
+
+    if(parts.length >= 2) {
+        shininess = getModValue(parts[2], renderModel);
+    }
+
+    if(parts.length >= 3) {
+        metalness = getModValue(parts[3], renderModel);
+    }
+
+    if(parts.length >= 4) {
+        roughness = getModValue(parts[4], renderModel);
+    }
+
+    if(parts.length >= 5) {
+        lightMap = getModValue(parts[5], renderModel);
+
+        if(lightMap && lightMap.indexOf("$") == 0) {
+            lightMap = await loadTexture(lightMap, renderModel);
+        } else {
+            lightMap = null;
+        }
+    }
+
+    if(parts.length >= 6) {
+        bumpMap = getModValue(parts[6], renderModel);
+
+        if(bumpMap && bumpMap.indexOf("$") == 0) {
+            bumpMap = await loadTexture(bumpMap, renderModel);
+        } else {
+            bumpMap = null;
+        }
+    }
+
+    if(color && color.length == 7 && color[0] == "#") {
+        obid.material.color = new Color(color);
+    }
+
+    if(shininess !== undefined && !isNaN(parseFloat(shininess))) {
+        obid.material.shininess = parseFloat(shininess);
+    }
+
+    if(metalness !== undefined && !isNaN(parseFloat(metalness))) {
+        obid.material.metalness = parseFloat(metalness);
+    }
+
+    if(roughness !== undefined && !isNaN(parseFloat(roughness))) {
+        obid.material.roughness = parseFloat(roughness);
+    }
+
+    if(lightMap) {
+        obid.material.lightMap = lightMap;
+    } else {
+        obid.material.lightMap = null;
+    }
+
+    if(bumpMap) {
+        obid.material.bumpMap = bumpMap;
+    } else {
+        obid.material.bumpMap = null;
+    }
+
+
+    obid.material.needsUpdate = true;
 }
 
 export {  BMLoader, BasicModel, ModelTexture, RenderBasicModel };
