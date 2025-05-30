@@ -47,7 +47,7 @@ let remoteModels = {};
 
 class BMLoader extends Loader {
 
-    constructor(manager, options) {
+    constructor(manager = undefined, options = {}) {
         super(manager);
 
         this.defMaterial = options.defMaterial || "lambert";
@@ -1349,7 +1349,9 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
             mapOptions.color = withColor;
         }
 
-        return new getMaterialClass(useMaterial)(mapOptions);
+        const matClass = getMaterialClass(useMaterial);
+
+        return new matClass(mapOptions);
     }
 
     let mapping = [];
@@ -1366,7 +1368,9 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
             mapOptions.color = withColor;
         }
 
-        mapping.push(new getMaterialClass(useMaterial)(mapOptions));
+        const matClass = getMaterialClass(useMaterial);
+
+        mapping.push(new matClass(mapOptions));
     }
     
     if(mapping.length == 0) {
@@ -1668,13 +1672,16 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     }
         
     if(!material) {
+
+        const matClass = getMaterialClass(useMaterial);
+
         if(colPart && colPart.length == 7 && colPart[0] == "#") {
-            material = new getMaterialClass(useMaterial)({
+            material = new matClass({
                 color: getModValue(colPart, renderModel),
                 side: side
             });
         } else {
-            material = new getMaterialClass(useMaterial)({
+            material = new matClass({
                 color: DEF_MODEL_COLOR,
                 side: side
             });
