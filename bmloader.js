@@ -1665,6 +1665,10 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     let mesh = null;
     let material = null;
 
+    if(colPart && colPart.indexOf("$") == 0) {
+        colPart = getModValue(colPart, renderModel);
+    }
+
     // texture
     if(txPart && txPart.indexOf("$") == 0) {
         let transparent = false;
@@ -1682,7 +1686,7 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
 
         if(colPart && colPart.length == 7 && colPart[0] == "#") {
             material = new matClass({
-                color: getModValue(colPart, renderModel),
+                color: colPart,
                 side: side
             });
         } else {
@@ -1743,19 +1747,19 @@ async function doMaterialOperation(id, code, renderModel) {
     }
 
     if(parts.length >= 2) {
-        shininess = getModValue(parts[2], renderModel);
+        shininess = getModValue(parts[1], renderModel);
     }
 
     if(parts.length >= 3) {
-        metalness = getModValue(parts[3], renderModel);
+        metalness = getModValue(parts[2], renderModel);
     }
 
     if(parts.length >= 4) {
-        roughness = getModValue(parts[4], renderModel);
+        roughness = getModValue(parts[3], renderModel);
     }
 
     if(parts.length >= 5) {
-        lightMap = getModValue(parts[5], renderModel);
+        lightMap = getModValue(parts[4], renderModel);
 
         if(lightMap && lightMap.indexOf("$") == 0) {
             lightMap = await loadTexture(lightMap, renderModel);
@@ -1764,8 +1768,8 @@ async function doMaterialOperation(id, code, renderModel) {
         }
     }
 
-    if(parts.length >= 6) {
-        bumpMap = getModValue(parts[6], renderModel);
+    if(parts.length >= 5) {
+        bumpMap = getModValue(parts[5], renderModel);
 
         if(bumpMap && bumpMap.indexOf("$") == 0) {
             bumpMap = await loadTexture(bumpMap, renderModel);
