@@ -1527,6 +1527,11 @@ async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat, renderM
 
                 resolve();
             };
+
+            if(imgURL.indexOf("http") == 0 || imgURL.indexOf("https") == 0) {
+                image.crossOrigin = "anonymous"; // Handle CORS for external images
+            }
+
             image.src = imgURL;
         },function(){
             console.log("fail");
