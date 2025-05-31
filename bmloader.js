@@ -1413,12 +1413,13 @@ async function loadTexture(txInst, renderModel) {
         return null;
     }
 
-    const txName = instParts[0].trim().substring(1);
+    const txNameRaw = instParts[0].trim();
+    const txName = txNameRaw.substring(1);
     let txDef = renderModel.bmDat.src.textures[txName];
 
     if(!txDef) {
 
-        const tryVal = getModValue(txName, renderModel);
+        const tryVal = getModValue(txNameRaw, renderModel);
 
         if(tryVal && (tryVal.indexOf("data:") == 0 || tryVal.indexOf("http") == 0)) {
             txDef = {
@@ -1428,7 +1429,7 @@ async function loadTexture(txInst, renderModel) {
                 varName: txName
             };
         } else {
-            console.warn("Texture definition not found for:", txName);
+            console.warn("Texture definition not found for:", txNameRaw);
             return null;
         }
     }
