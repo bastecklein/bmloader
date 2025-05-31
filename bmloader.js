@@ -1427,9 +1427,10 @@ async function loadTexture(txInst, renderModel) {
                 frames: 1,
                 varName: txName
             };
+        } else {
+            console.warn("Texture definition not found for:", txName);
+            return null;
         }
-
-        return null;
     }
 
     // eventually, to support animated textures
