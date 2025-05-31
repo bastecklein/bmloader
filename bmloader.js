@@ -1762,7 +1762,7 @@ async function createLatheOperation(code, renderModel, currentGroup, loader) {
         useMaterial = parts[5].trim();
     }
 
-    return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial);
+    return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial, true, DoubleSide);
 }
 
 async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, txPart, useMaterial, depthWrite = true, side = FrontSide) {
