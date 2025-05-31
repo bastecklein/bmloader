@@ -1697,7 +1697,7 @@ function getMaterialClass(matname) {
 }
 
 async function createLatheOperation(code, renderModel, currentGroup, loader) {
-    let raw = code.replace("shape(","");
+    let raw = code.replace("lathe(","");
     raw = raw.replace(")","");
 
     const parts = raw.split(",");
