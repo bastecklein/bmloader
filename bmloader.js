@@ -52,6 +52,7 @@ class BMLoader extends Loader {
         super(manager);
 
         this.defMaterial = options.defMaterial || "lambert";
+        this.imgQuality = options.imgQuality || 0.85;
     }
 
     load(url, onLoad, onProgress, onError) {
@@ -145,21 +146,43 @@ class ModelTexture {
     }
 }
 
+class RenderBasicModelProperties {
+    constructor() {
+        this.src = null; // The original model data
+        this.variables = {}; // Variables defined in the model
+        this.variableOverrides = {}; // Overrides for variables
+        this.geoTranslate = { x: 0, y: 0, z: 0 }; // Geometry translation offsets
+        this.animations = {}; // Animation definitions
+        this.animation = null; // Current animation being played
+        this._scriptLines = null; // Original script lines for reference
+        this.lastAnimation = null; // Last animation played
+        this.defaultState = {}; // Default state of the model
+        this.loaderRef = null; // Reference to the loader instance
+    }
+}
+
+/**
+ * Represents a renderable basic model in Three.js.
+ * This class extends the Three.js Group class and provides methods for animating, resetting, saving, and restoring the model's state.
+ * It encapsulates the model's properties, including its source data, animations, and variable overrides.
+ * It also provides methods to handle animations defined in the model's script.
+ * @extends Group
+ * @property {RenderBasicModelProperties} bmDat - The properties of the basic model, including source data, animations, and variable overrides.
+ */
 class RenderBasicModel extends Group {
-    constructor(model) {
+
+    /**
+     * Creates an instance of RenderBasicModel.
+     * @param {BasicModel} model - The source model data to render.
+     * @param {BMLoader} [loader=null] - An optional loader instance for loading textures and materials.
+     */
+    constructor(model, loader = null) {
         super();
 
-        this.bmDat = {
-            src: model,
-            variables: {},
-            variableOverrides: {},
-            geoTranslate: { x: 0, y: 0, z: 0 },
-            animations: {},
-            animation: null,
-            _scriptLines: null,
-            lastAnimation: null,
-            defaultState: {}
-        };
+        this.bmDat = new RenderBasicModelProperties();
+
+        this.bmDat.src = model;
+        this.bmDat.loaderRef = loader || null;
     }
 
     dispose() {
@@ -385,7 +408,7 @@ function doAnimate(model, inst, delta) {
  */
 async function loadBM(modelData, options, loader) {
 
-    const renderModel = new RenderBasicModel(modelData);
+    const renderModel = new RenderBasicModel(modelData, loader);
 
     if(options) {
         if(options.variables) {
@@ -548,20 +571,6 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         if (mod.startsWith("material(")) {
             (usingVar ? doMaterialOperation(usingVar, mod, renderModel)
                 : usingObj && doMaterialOperation(usingObj, mod, renderModel));
-            /*
-            const args = mod.substring(9, mod.length - 1).split(",").map(s => s.trim());
-            const [color, bumpMap, lightMap] = args;
-            if (usingObj && usingObj.material) {
-                usingObj.material.color = new Color(getModValue(color, renderModel));
-                if (bumpMap && renderModel.bmDat.textures[getModValue(bumpMap, renderModel)]) {
-                    usingObj.material.bumpMap = renderModel.bmDat.textures[getModValue(bumpMap, renderModel)];
-                    usingObj.material.bumpScale = 1;
-                }
-                if (lightMap && renderModel.bmDat.textures[getModValue(lightMap, renderModel)]) {
-                    usingObj.material.lightMap = renderModel.bmDat.textures[getModValue(lightMap, renderModel)];
-                }
-                usingObj.material.needsUpdate = true;
-            }*/
             continue;
         }
 
@@ -671,6 +680,15 @@ function createGroupOperation(code, renderModel, currentGroup, loader) {
     return group;
 }
 
+/**
+ * Returns the value of a variable or expression, resolving any variable references.
+ * Supports simple math expressions and variable references in the form of $varName.
+ * Handles circular references by returning 0 and logging a warning.
+ * @param {string|number} val The value or expression to evaluate.
+ * @param {RenderBasicModel} renderModel The model containing variable definitions.
+ * @param {Set} visited A set to track visited variable names to prevent circular references.
+ * @return {number|string} The resolved value, which can be a number, string, or expression result.
+ */
 function getModValue(val, renderModel, visited = new Set()) {
     if (typeof val !== 'string') return val;
 
@@ -1341,7 +1359,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
     if(txInst.length == 1) {
 
         let mapOptions = {
-            map: await loadTexture(txInst[0],renderModel),
+            map: await loadTexture(txInst[0], renderModel),
             transparent: transparent,
             depthWrite: depthWrite
         };
@@ -1381,7 +1399,13 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
     return mapping;
 }
 
-async function loadTexture(txInst,renderModel) {
+/**
+ * Loads a texture based on the provided instruction.
+ * @param {string} txInst - The texture instruction string.
+ * @param {RenderBasicModel} renderModel - The render model containing texture definitions.
+ * @return {Promise<Texture|null>} - A promise that resolves to the loaded texture or null if not found.
+ */
+async function loadTexture(txInst, renderModel) {
         
     const instParts = txInst.split("&");
 
@@ -1390,20 +1414,42 @@ async function loadTexture(txInst,renderModel) {
     }
 
     const txName = instParts[0].trim().substring(1);
-    const txDef = renderModel.bmDat.src.textures[txName];
+    let txDef = renderModel.bmDat.src.textures[txName];
 
     if(!txDef) {
+
+        const tryVal = getModValue(txName, renderModel);
+
+        if(tryVal && (tryVal.indexOf("data:") == 0 || tryVal.indexOf("http") == 0)) {
+            txDef = {
+                type: getTypeFromImageUrl(tryVal),
+                data: tryVal,
+                frames: 1,
+                varName: txName
+            };
+        }
+
         return null;
     }
 
     // eventually, to support animated textures
     const frame = 0;
 
-    const tx = await getFrameTexture(txDef,instParts,frame,renderModel);
+    const tx = await getFrameTexture(txDef, instParts, frame, renderModel);
     tx.colorSpace = SRGBColorSpace;
+
     return tx;
 }
 
+/**
+ * Retrieves a texture for a specific frame based on the texture definition and instructions.
+ * @param {ModelTexture} txDef - The texture definition containing type and data.
+ * @param {Array} instructions - The instructions for modifying the texture.
+ * @param {number} frame - The frame number to retrieve the texture for.
+ * @param {RenderBasicModel} renderModel - The render model containing texture definitions.
+ * @return {Promise<Texture|null>} - A promise that resolves to the loaded texture or null if not found.
+ * @description This function handles both static and animated textures, including SVG modifications.
+ */
 async function getFrameTexture(txDef, instructions, frame, renderModel) {
     if(!threeLoader) {
         threeLoader = new TextureLoader();
@@ -1430,7 +1476,7 @@ async function getFrameTexture(txDef, instructions, frame, renderModel) {
         imgURL = URL.createObjectURL(blob);
     }
 
-    const img = await getImageFromStoredCanvas(txDef, imgURL, frame, raw);
+    const img = await getImageFromStoredCanvas(txDef, imgURL, frame, raw, renderModel);
 
     if(img) {
         return threeLoader.load(img);
@@ -1439,11 +1485,27 @@ async function getFrameTexture(txDef, instructions, frame, renderModel) {
     return null;
 }
 
-async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat) {
+/**
+ * Retrieves an image from a stored canvas or creates a new canvas if not found.
+ * @param {ModelTexture} txDef - The texture definition containing type and data.
+ * @param {string} imgURL - The URL of the image to load.
+ * @param {number} frame - The frame number to retrieve the image for.
+ * @param {string} rawImgDat - The raw image data for SVG modifications.
+ * @param {RenderBasicModel} renderModel - The render model containing texture definitions.
+ * @return {Promise<string|null>} - A promise that resolves to the image data URL or null if not found.
+ * @description This function checks if the image is already stored in a canvas. If not, it creates a new canvas, draws the image, and stores it for future use.
+ */
+async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat, renderModel) {
     const imgName = hash(rawImgDat);
 
     let imCanvas = null;
     let imContext = null;
+
+    let imgQuality = 0.85;
+
+    if(renderModel && renderModel.bmDat && renderModel.bmDat.loaderRef) {
+        imgQuality = renderModel.bmDat.loaderRef.imgQuality || 0.85;
+    }
 
     if(storedImageCanvases[imgName]) {
         imCanvas = storedImageCanvases[imgName];
@@ -1471,10 +1533,54 @@ async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat) {
     }
 
     if(txDef.frames == 1) {
-        return imCanvas.toDataURL("image/webp", 0.85);
+        return imCanvas.toDataURL("image/webp", imgQuality);
     }
 
     console.log("GRAB A FRAME!");
+}
+
+function getTypeFromImageUrl(imgURL) {
+    if(imgURL.indexOf("data:image/webp") == 0) {
+        return "image/webp";
+    }
+
+    if(imgURL.indexOf("data:image/png") == 0) {
+        return "image/png";
+    }
+
+    if(imgURL.indexOf("data:image/jpeg") == 0) {
+        return "image/jpeg";
+    }
+
+    if(imgURL.indexOf("data:image/svg") == 0) {
+        return "image/svg+xml";
+    }
+
+    if(imgURL.indexOf("data:image/gif") == 0) {
+        return "image/gif";
+    }
+
+    if(imgURL.endsWith(".webp")) {
+        return "image/webp";
+    }
+
+    if(imgURL.endsWith(".png")) {
+        return "image/png";
+    }
+
+    if(imgURL.endsWith(".jpg") || imgURL.endsWith(".jpeg")) {
+        return "image/jpeg";
+    }
+
+    if(imgURL.endsWith(".svg")) {
+        return "image/svg+xml";
+    }
+
+    if(imgURL.endsWith(".gif")) {
+        return "image/gif";
+    }
+
+    return "image/webp"; // Default to webp if nothing matches
 }
 
 function rebuildBM(obj) {
