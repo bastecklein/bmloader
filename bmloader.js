@@ -83,7 +83,7 @@ class BMLoader extends Loader {
                 return;
             }
 
-            if(options.url) {
+            if(url.url) {
                 options = url;
                 url = options.url;
             } else {
