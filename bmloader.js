@@ -84,9 +84,10 @@ class BMLoader extends Loader {
             }
 
             if(options.url) {
-                url = options.url;
                 options = url;
+                url = options.url;
             } else {
+                console.log(options);
                 onError(new Error("Invalid model data"));
                 return;
             }
