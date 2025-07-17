@@ -275,6 +275,10 @@ function animateModel(model, delta) {
         return;
     }
 
+    if(model.bmDat.animation && !model.bmDat.lastAnimation) {
+        model.saveState();
+    }
+
     for(let aniName in model.bmDat.animations) {
         if(aniName == model.bmDat.animation) {
             continue;
