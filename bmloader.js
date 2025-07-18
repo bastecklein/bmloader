@@ -258,6 +258,11 @@ function parseAnimationInstructions(animation) {
  * @param {number} delta The time delta since the last frame
  */
 function animateModel(model, delta) {
+
+    if(!model || !model.bmDat) {
+        return;
+    }
+
     if(!model.bmDat.animations || !model.bmDat.animation) {
 
         if(model.bmDat.lastAnimation) {
