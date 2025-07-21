@@ -1049,12 +1049,14 @@ class RenderBasicModel extends Group {
     createSingleMaterialMerge(meshes, options = {}) {
         const { preserveUVs = true, preserveColors = true } = options;
         
-        // Clone and transform geometries to world space
+        // Clone and transform geometries to preserve their local transforms
         const geometries = meshes.map(mesh => {
             const geometry = mesh.geometry.clone();
             
-            // Apply the mesh's transform to the geometry
-            geometry.applyMatrix4(mesh.matrixWorld);
+            // Apply the mesh's local transform (position, rotation, scale) to the geometry
+            // This preserves the mesh's transform relative to its parent
+            mesh.updateMatrix();
+            geometry.applyMatrix4(mesh.matrix);
             
             // Preserve attributes if requested
             if (!preserveUVs && geometry.attributes.uv) {
@@ -1070,6 +1072,11 @@ class RenderBasicModel extends Group {
         try {
             const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries);
             const mergedMesh = new Mesh(mergedGeometry, meshes[0].material);
+            
+            // The merged mesh should be positioned at the origin since we baked transforms into geometry
+            mergedMesh.position.set(0, 0, 0);
+            mergedMesh.rotation.set(0, 0, 0);
+            mergedMesh.scale.set(1, 1, 1);
             
             // Clean up cloned geometries
             geometries.forEach(geo => geo.dispose());
