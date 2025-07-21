@@ -780,12 +780,17 @@ class RenderBasicModel extends Group {
             risks.push('Model has animations - merging will break them completely');
         }
         
-        if (structure.totalVariables > 10) {
-            riskLevel = riskLevel === 'critical' ? 'critical' : 'high';
-            risks.push(`Model has ${structure.totalVariables} named objects - likely needs individual control`);
+        // Only consider named objects risky if animations exist (indicating potential runtime control)
+        if (hasAnimations && structure.totalVariables > 15) {
+            riskLevel = 'critical'; // Already critical due to animations
+            risks.push(`Model has ${structure.totalVariables} named objects AND animations - runtime control likely needed`);
+        } else if (!hasAnimations && structure.totalVariables > 30) {
+            // Much higher threshold for static models - lots of names is just organization
+            riskLevel = 'medium';
+            risks.push(`Model has ${structure.totalVariables} named objects - may need runtime control (but no animations detected)`);
         }
         
-        if (originalDrawCalls <= 3) {
+        if (originalDrawCalls <= 2) {
             risks.push('Model is already well-optimized - minimal benefit from merging');
         }
         
@@ -803,30 +808,35 @@ class RenderBasicModel extends Group {
         let reasoning = [];
         
         if (riskLevel === 'critical') {
-            // Never merge if critical risks
+            // Never merge if critical risks (animations)
             shouldMerge = false;
             confidence = 1.0;
             reasoning.push('❌ CRITICAL: Animations detected - merging forbidden');
-        } else if (riskLevel === 'high' && !allowBreaking) {
-            // Don't merge complex models unless explicitly allowed
-            shouldMerge = false;
-            confidence = 0.8;
-            reasoning.push('⚠️ HIGH RISK: Complex model detected - merging disabled for safety');
-        } else if (isMassiveInstanceCount && originalDrawCalls > 5) {
-            // Always merge for massive instance counts with complex models
+        } else if (isMassiveInstanceCount && originalDrawCalls > 3) {
+            // Always merge for massive instance counts with reasonable complexity
             shouldMerge = true;
-            confidence = 0.9;
-            reasoning.push('✅ MASSIVE SCALE: 50+ instances of complex model - performance critical');
-        } else if (isHighInstanceCount && drawCallSavings > 3) {
-            // Merge for high instance counts with good savings
+            confidence = 0.95;
+            reasoning.push('✅ MASSIVE SCALE: 50+ instances - performance critical, no animations');
+        } else if (isHighInstanceCount && drawCallSavings > 2) {
+            // Merge for high instance counts with decent savings
+            shouldMerge = true;
+            confidence = 0.85;
+            reasoning.push('✅ HIGH BENEFIT: 10+ instances with 2+ draw call savings, no animations');
+        } else if (instanceCount >= 5 && originalDrawCalls >= 5 && isStatic !== false) {
+            // More aggressive for moderate usage - no animations means likely static
+            shouldMerge = true;
+            confidence = 0.75;
+            reasoning.push('✅ GOOD CANDIDATE: 5+ instances of multi-mesh static model');
+        } else if (instanceCount >= 3 && originalDrawCalls >= 8 && !hasAnimations) {
+            // Even lower threshold for complex static models
             shouldMerge = true;
             confidence = 0.7;
-            reasoning.push('✅ HIGH BENEFIT: 10+ instances with 3+ draw call savings');
-        } else if (instanceCount >= 5 && originalDrawCalls >= 10 && isStatic !== false) {
-            // Merge for moderate usage of complex static models
-            shouldMerge = true;
+            reasoning.push('✅ COMPLEX STATIC: 3+ instances of complex model, no animations detected');
+        } else if (riskLevel === 'medium' && !allowBreaking) {
+            // Only skip medium risk if user explicitly doesn't allow breaking
+            shouldMerge = false;
             confidence = 0.6;
-            reasoning.push('✅ GOOD CANDIDATE: 5+ instances of complex static model');
+            reasoning.push('⚠️ MEDIUM RISK: Many named objects detected - merging disabled for safety');
         } else {
             // Default: don't merge unless proven beneficial
             shouldMerge = false;
