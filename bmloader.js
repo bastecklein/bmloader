@@ -30,8 +30,7 @@ import {
     Color,
     FrontSide,
     InstancedMesh,
-    Object3D,
-    Matrix4
+    Object3D
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -1050,28 +1049,22 @@ class RenderBasicModel extends Group {
     createSingleMaterialMerge(meshes, options = {}) {
         const { preserveUVs = true, preserveColors = true } = options;
         
+        // First, ensure all objects in the entire model have their matrices properly updated
+        // This is critical because group transforms might have been applied via variables
+        // after the initial hierarchy was built
+        this.updateMatrixWorld(true);
+        
         // Clone and transform geometries to preserve their complete transform hierarchy
         const geometries = meshes.map(mesh => {
             const geometry = mesh.geometry.clone();
             
-            // Apply the complete transform chain from mesh to the BMLoader root
-            // This includes the mesh's local transform AND any parent group transforms
-            const transformMatrix = new Matrix4();
+            // For debugging: let's see what we're working with
+            console.log(`Processing mesh at local position: ${mesh.position.x}, ${mesh.position.y}, ${mesh.position.z}`);
+            const worldPos = mesh.getWorldPosition(new Vector3());
+            console.log(`World position: ${worldPos.x.toFixed(3)}, ${worldPos.y.toFixed(3)}, ${worldPos.z.toFixed(3)}`);
             
-            // Build transform chain from this mesh up to the BMLoader model (but not beyond)
-            let currentObject = mesh;
-            const matrices = [];
-            
-            while (currentObject && currentObject !== this) {
-                currentObject.updateMatrix();
-                matrices.unshift(currentObject.matrix.clone());
-                currentObject = currentObject.parent;
-            }
-            
-            // Combine all transforms in the hierarchy
-            for (const matrix of matrices) {
-                transformMatrix.premultiply(matrix);
-            }
+            // Use the matrixWorld which should include all parent transforms
+            const transformMatrix = mesh.matrixWorld.clone();
             
             // Apply the complete transform to the geometry
             geometry.applyMatrix4(transformMatrix);
