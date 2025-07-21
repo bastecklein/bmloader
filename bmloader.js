@@ -360,13 +360,20 @@ class RenderBasicModel extends Group {
         try {
             // Identify all animated objects
             const animatedObjects = new Set();
-            for (const animations of Object.values(this.bmDat.animations || {})) {
+            
+            console.log('Available animations:', Object.keys(this.bmDat.animations || {}));
+            
+            for (const [animName, animations] of Object.entries(this.bmDat.animations || {})) {
+                console.log(`Processing animation '${animName}':`, animations);
                 if (Array.isArray(animations)) {
                     for (const anim of animations) {
+                        console.log(`  - Animation instruction targets: '${anim.target}'`);
                         animatedObjects.add(anim.target);
                     }
                 }
             }
+            
+            console.log('Detected animated objects:', Array.from(animatedObjects));
             
             // Find groups of identical meshes (same geometry + material + no animations)
             const instanceCandidates = new Map();
