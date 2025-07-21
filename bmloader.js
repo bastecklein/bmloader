@@ -34,7 +34,7 @@ import {
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
-import { BufferGeometryUtils } from 'three/addons/utils/BufferGeometryUtils.js';
+import { BufferGeometryUtils } from "three/addons/utils/BufferGeometryUtils.js"
 
 import { Parser } from "expr-eval";
 
