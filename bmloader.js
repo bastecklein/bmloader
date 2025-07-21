@@ -383,7 +383,23 @@ class RenderBasicModel extends Group {
                 if (!child.isMesh) return;
                 
                 const varName = this.findVariableNameForObject(child);
-                const isAnimated = animatedObjects.has(varName);
+                let isAnimated = animatedObjects.has(varName);
+                
+                // Also check if any parent object is animated (for Groups containing meshes)
+                if (!isAnimated) {
+                    let parent = child.parent;
+                    while (parent && parent !== this) {
+                        const parentVarName = this.findVariableNameForObject(parent);
+                        if (parentVarName && animatedObjects.has(parentVarName)) {
+                            isAnimated = true;
+                            console.log(`  -> Mesh '${varName}' is animated via parent '${parentVarName}'`);
+                            break;
+                        }
+                        parent = parent.parent;
+                    }
+                }
+                
+                console.log(`Mesh found: varName='${varName}', isAnimated=${isAnimated}, geometryType=${child.geometry.type}`);
                 
                 if (!isAnimated) {
                     const geoKey = this.getSimpleGeometryKey(child.geometry);
