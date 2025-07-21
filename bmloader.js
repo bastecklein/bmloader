@@ -1049,32 +1049,65 @@ class RenderBasicModel extends Group {
     createSingleMaterialMerge(meshes, options = {}) {
         const { preserveUVs = true, preserveColors = true } = options;
         
+        console.log(`\n🔧 Starting single material merge with ${meshes.length} meshes`);
+        
         // First, ensure all objects in the entire model have their matrices properly updated
         // This is critical because group transforms might have been applied via variables
         // after the initial hierarchy was built
+        console.log('📐 Updating world matrices for entire model hierarchy...');
         this.updateMatrixWorld(true);
         
         // Clone and transform geometries to preserve their complete transform hierarchy
         const geometries = meshes.map((mesh, index) => {
+            console.log(`\n--- Processing Mesh ${index} ---`);
+            
             const geometry = mesh.geometry.clone();
             
+            // Before any updates, log current state
+            console.log(`BEFORE matrix updates:`);
+            console.log(`  Position: (${mesh.position.x.toFixed(3)}, ${mesh.position.y.toFixed(3)}, ${mesh.position.z.toFixed(3)})`);
+            console.log(`  Rotation: (${(mesh.rotation.x * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.y * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.z * 180/Math.PI).toFixed(1)}°)`);
+            console.log(`  Scale: (${mesh.scale.x.toFixed(3)}, ${mesh.scale.y.toFixed(3)}, ${mesh.scale.z.toFixed(3)})`);
+            
+            // Log matrix before update
+            if (mesh.matrix && mesh.matrix.elements) {
+                const m = mesh.matrix.elements;
+                console.log(`  Local Matrix [0-3]: [${m[0].toFixed(3)}, ${m[1].toFixed(3)}, ${m[2].toFixed(3)}, ${m[3].toFixed(3)}]`);
+                console.log(`  Local Matrix [12-15]: [${m[12].toFixed(3)}, ${m[13].toFixed(3)}, ${m[14].toFixed(3)}, ${m[15].toFixed(3)}]`);
+            }
+            
             // CRITICAL: Force update of this specific mesh's matrix from its transform properties
-            // This ensures that any transforms applied via BM script (position, rotation, scale)
-            // are properly reflected in the mesh's matrix before we use matrixWorld
+            console.log(`⚙️ Calling mesh.updateMatrix()...`);
             mesh.updateMatrix();
+            
+            console.log(`⚙️ Calling mesh.updateMatrixWorld(true)...`);
             mesh.updateMatrixWorld(true);
             
-            // Debug output to verify transforms are being captured
-            if (mesh.position.x !== 0 || mesh.position.y !== 0 || mesh.position.z !== 0 ||
-                mesh.rotation.x !== 0 || mesh.rotation.y !== 0 || mesh.rotation.z !== 0) {
-                console.log(`Mesh ${index}: pos(${mesh.position.x.toFixed(2)}, ${mesh.position.y.toFixed(2)}, ${mesh.position.z.toFixed(2)}) rot(${(mesh.rotation.x * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.y * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.z * 180/Math.PI).toFixed(1)}°)`);
+            // After updates, log new state
+            console.log(`AFTER matrix updates:`);
+            if (mesh.matrix && mesh.matrix.elements) {
+                const m = mesh.matrix.elements;
+                console.log(`  Updated Local Matrix [0-3]: [${m[0].toFixed(3)}, ${m[1].toFixed(3)}, ${m[2].toFixed(3)}, ${m[3].toFixed(3)}]`);
+                console.log(`  Updated Local Matrix [12-15]: [${m[12].toFixed(3)}, ${m[13].toFixed(3)}, ${m[14].toFixed(3)}, ${m[15].toFixed(3)}]`);
             }
+            
+            if (mesh.matrixWorld && mesh.matrixWorld.elements) {
+                const mw = mesh.matrixWorld.elements;
+                console.log(`  World Matrix [0-3]: [${mw[0].toFixed(3)}, ${mw[1].toFixed(3)}, ${mw[2].toFixed(3)}, ${mw[3].toFixed(3)}]`);
+                console.log(`  World Matrix [12-15]: [${mw[12].toFixed(3)}, ${mw[13].toFixed(3)}, ${mw[14].toFixed(3)}, ${mw[15].toFixed(3)}]`);
+            }
+            
+            // Test world position calculation
+            const worldPos = mesh.getWorldPosition(new Vector3());
+            console.log(`  Calculated World Position: (${worldPos.x.toFixed(3)}, ${worldPos.y.toFixed(3)}, ${worldPos.z.toFixed(3)})`);
             
             // Use the matrixWorld which should include all parent transforms
             const transformMatrix = mesh.matrixWorld.clone();
             
+            console.log(`🎯 Applying transform matrix to geometry...`);
             // Apply the complete transform to the geometry
             geometry.applyMatrix4(transformMatrix);
+            console.log(`✅ Transform applied to geometry ${index}`);
             
             // Preserve attributes if requested
             if (!preserveUVs && geometry.attributes.uv) {
@@ -1088,6 +1121,7 @@ class RenderBasicModel extends Group {
         });
         
         try {
+            console.log(`🔗 Merging ${geometries.length} transformed geometries...`);
             const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries);
             const mergedMesh = new Mesh(mergedGeometry, meshes[0].material);
             
@@ -1096,12 +1130,14 @@ class RenderBasicModel extends Group {
             mergedMesh.rotation.set(0, 0, 0);
             mergedMesh.scale.set(1, 1, 1);
             
+            console.log(`✅ Single material merge completed successfully`);
+            
             // Clean up cloned geometries
             geometries.forEach(geo => geo.dispose());
             
             return mergedMesh;
         } catch (error) {
-            console.error('Single material merge failed:', error);
+            console.error('💥 Single material merge failed:', error);
             // Clean up on failure
             geometries.forEach(geo => geo.dispose());
             throw error;
