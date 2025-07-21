@@ -1,25 +1,61 @@
 # BMLoader Optimization Guide
 
-This guide covers the performance optimization features available in BMLoader, including analysis tools, safe optimization methods, and best practices for different use cases.
+This guide covers the performance optimization features available in BMLoader, including analysis tools, safe optimization methods, geometry merging, and best practices for different use cases.
 
 ## Table of Contents
 
 1. [Overview](#overview)
-2. [Quick Start](#quick-start)
-3. [Analysis Methods](#analysis-methods)
-4. [Optimization Methods](#optimization-methods)
-5. [Use Case Examples](#use-case-examples)
-6. [Best Practices](#best-practices)
-7. [Troubleshooting](#troubleshooting)
+2. [Architecture Limitations](#architecture-limitations)
+3. [Quick Start](#quick-start)
+4. [Analysis Methods](#analysis-methods)
+5. [Optimization Methods](#optimization-methods)
+6. [Geometry Merging](#geometry-merging)
+7. [Use Case Examples](#use-case-examples)
+8. [Best Practices](#best-practices)
+9. [Troubleshooting](#troubleshooting)
 
 ## Overview
 
-BMLoader includes intelligent optimization features that can significantly improve performance while maintaining compatibility with animations and variable references. The system uses:
+BMLoader includes intelligent optimization features that can significantly improve performance while maintaining compatibility with animations and variable references. The system offers three optimization approaches:
 
-- **Smart animation detection** - Only protects objects that are actually animated
-- **Adaptive thresholds** - Lower requirements for simple models
-- **Scene-level analysis** - Recommendations for models used multiple times
+- **Smart instancing** - Groups identical meshes within a model
+- **Adaptive thresholds** - Lower requirements for simple models  
+- **Geometry merging** - Ultimate optimization that combines all meshes into one (breaks animations)
 - **Conservative approach** - Safety-first design for public library use
+
+## Architecture Limitations
+
+**Important**: BMLoader models are hierarchical Three.js Groups containing multiple meshes, not single objects. This has significant implications for optimization:
+
+### What BMLoader Optimization CAN Do
+- ✅ **Internal optimization**: Optimize duplicate meshes *within* a single model instance
+- ✅ **Smart analysis**: Identify which objects can be safely instanced inside the model
+- ✅ **Animation preservation**: Keep all animation functionality intact (except with merging)
+- ✅ **Variable system**: Maintain `bmDat.variables` references (except with merging)
+- ✅ **Geometry merging**: Combine entire model into 1-3 meshes for static models
+
+### What BMLoader Optimization CANNOT Do
+- ❌ **Scene-level instancing**: Cannot instance entire models across a scene (100+ powerups)
+- ❌ **Cross-model optimization**: Each model instance is optimized independently
+
+### Why Scene-Level Instancing Doesn't Work
+```javascript
+// This won't work because BMLoader models are Groups, not single meshes:
+const instancedMesh = new InstancedMesh(modelGeometry, modelMaterial, 100); // ❌
+
+// BMLoader models are actually like this:
+const modelGroup = new Group();
+modelGroup.add(mesh1, mesh2, mesh3, ...); // Multiple meshes in hierarchy
+
+// BUT geometry merging can solve this:
+model.createMergedMesh({ dryRun: false, allowMerging: true });
+// Now model is a single mesh, suitable for manual scene instancing!
+```
+
+For true scene-level performance with many identical objects, consider:
+1. Using simple Three.js geometries instead of BMLoader
+2. Creating simplified versions of complex models for repeated use
+3. Level-of-detail (LOD) systems for distant objects
 
 ## Quick Start
 
@@ -153,21 +189,27 @@ console.log(recommendations);
 
 ### 4. `prepareForSceneInstancing()`
 
-Analyzes potential for scene-level instancing (when using many copies of the same model).
+**⚠️ IMPORTANT**: This method provides analysis only. BMLoader models cannot be directly instanced at scene level.
 
 ```javascript
-const prep = model.prepareForSceneInstancing();
-console.log(prep);
+const analysis = model.prepareForSceneInstancing();
+console.log(analysis);
 ```
 
 **Returns:**
 ```javascript
 {
-    canInstance: true,
+    canInstance: false,
+    reason: "BMLoader models are hierarchical Groups, not instanceable meshes",
     currentDrawCalls: 5,
-    potentialDrawCalls: 2,
-    savings: 3,
-    recommendation: "Can reduce from 5 to 2 draw calls per instance"
+    analysisOnly: true,
+    recommendation: "Complex model (5 draw calls) - not suitable for scene instancing",
+    alternativeApproaches: [
+        "Create simplified Three.js geometry version for repeated use",
+        "Use Level-of-Detail (LOD) system for distant objects",
+        "Implement object pooling for dynamic objects",
+        "Consider using sprites for very distant/small objects"
+    ]
 }
 ```
 
@@ -214,22 +256,146 @@ model.optimize({
 
 **Note:** This method is less safe and may break variable references. Use `optimizeSafe()` instead.
 
+## Geometry Merging
+
+**⚠️ ULTIMATE OPTIMIZATION**: Geometry merging combines ALL meshes in a model into 1-3 single meshes, providing maximum performance but **completely breaking animations and variable references**.
+
+### When to Use Geometry Merging
+
+✅ **Perfect for:**
+- Static models used 50+ times in scene (trees, rocks, buildings)
+- Complex models with many small parts (25+ meshes)
+- Environment props that never need individual control
+
+❌ **Never use for:**
+- Animated models (animations will be completely broken)
+- Models needing bmDat.variables access
+- Interactive models requiring individual part control
+
+### Basic Usage
+
+```javascript
+// Analyze merging potential
+const analysis = model.createMergedMesh({ dryRun: true });
+console.log(`Can save ${analysis.analysis.savings} draw calls`);
+
+// Apply merging (WARNING: breaks animations!)
+if (analysis.canMerge && analysis.analysis.savings > 5) {
+    const result = model.createMergedMesh({ 
+        dryRun: false, 
+        allowMerging: true,
+        preserveUVs: true,      // Keep texture coordinates
+        preserveColors: true    // Keep vertex colors
+    });
+    
+    if (result.success) {
+        console.log(`Model merged: ${result.analysis.originalDrawCalls} → ${result.analysis.finalDrawCalls} meshes`);
+        // Model is now optimized for scene-level use!
+    }
+}
+```
+
+### Performance Impact Examples
+
+```javascript
+// Complex tree model before merging:
+// - 25 meshes (trunk, branches, leaves, etc.)
+// - 100 trees in scene = 2,500 draw calls
+
+const tree = await loader.loadAsync('complex_tree.bm');
+const analysis = tree.createMergedMesh({ dryRun: true });
+// Result: 25 meshes → 1 mesh (all same material)
+
+tree.createMergedMesh({ dryRun: false, allowMerging: true });
+// Now: 100 trees in scene = 100 draw calls (2,400 saved!)
+```
+
+### Material Handling
+
+```javascript
+// Single material model (perfect merge):
+const analysis = model.createMergedMesh({ dryRun: true });
+// Result: 20 meshes → 1 mesh (19 draw calls saved)
+
+// Multi-material model (grouped merge):
+const analysis2 = building.createMergedMesh({ dryRun: true });  
+// Result: 30 meshes with 3 materials → 3 meshes (27 draw calls saved)
+```
+
+### Limitations and Warnings
+
+```javascript
+// After merging, these NO LONGER WORK:
+model.bmDat.animation = 'spin';                    // ❌ Broken
+model.animate(deltaTime);                          // ❌ Broken  
+model.bmDat.variables.door.rotation.y = Math.PI;  // ❌ Broken
+
+// Model is now suitable only for static placement:
+for (let i = 0; i < 100; i++) {
+    const instance = model.clone();
+    instance.position.set(Math.random() * 100, 0, Math.random() * 100);
+    scene.add(instance);
+}
+```
+
+### Combined with Scene Instancing
+
+After merging, models become single meshes suitable for manual scene instancing:
+
+```javascript
+// 1. Merge the model
+const tree = await loader.loadAsync('tree.bm');
+tree.createMergedMesh({ dryRun: false, allowMerging: true });
+
+// 2. Extract the merged mesh
+let mergedMesh;
+tree.traverse(child => {
+    if (child.isMesh) mergedMesh = child;
+});
+
+// 3. Create scene-level instanced mesh  
+const instancedTrees = new THREE.InstancedMesh(
+    mergedMesh.geometry,
+    mergedMesh.material, 
+    1000  // 1000 trees in the forest
+);
+
+// Position each tree instance
+const dummy = new THREE.Object3D();
+for (let i = 0; i < 1000; i++) {
+    dummy.position.set(
+        Math.random() * 200 - 100,
+        0,
+        Math.random() * 200 - 100
+    );
+    dummy.updateMatrix();
+    instancedTrees.setMatrixAt(i, dummy.matrix);
+}
+instancedTrees.instanceMatrix.needsUpdate = true;
+scene.add(instancedTrees);
+
+// Result: 1000 trees = 1 draw call!
+```
+
 ## Use Case Examples
 
 ### 1. Simple Static Models (Powerups, Props)
 
 **Scenario:** Small models with 2-5 objects, no animations, used 100+ times in scene.
 
+⚠️ **Architecture Limitation**: BMLoader models are Groups, not single meshes, so direct scene instancing isn't possible.
+
 ```javascript
 // Load model
 const powerup = await loader.loadAsync('powerup.bm');
 
-// Check scene instancing potential
-const prep = powerup.prepareForSceneInstancing();
-console.log(prep.recommendation);
+// Check what optimization is possible
+const analysis = powerup.prepareForSceneInstancing();
+console.log(analysis.alternativeApproaches);
 
-// Optimize individual model first
-if (prep.savings > 0) {
+// Optimize the individual model internally
+const optAnalysis = powerup.optimizeSafe({ dryRun: true });
+if (optAnalysis.potentialSavings > 0) {
     powerup.optimizeSafe({ 
         dryRun: false, 
         allowOptimization: true,
@@ -237,12 +403,28 @@ if (prep.savings > 0) {
     });
 }
 
-// Then use Three.js InstancedMesh for scene-level optimization
-const instancedMesh = new THREE.InstancedMesh(
-    powerup.geometry, 
-    powerup.material, 
-    100  // 100 instances in scene
-);
+// For scene-level performance, you'll need to:
+// 1. Extract geometry/material if the model is simple (1 mesh)
+// 2. Create a manual InstancedMesh
+// 3. Or consider object pooling for dynamic objects
+
+// Example for single-mesh models:
+if (analysis.currentDrawCalls === 1) {
+    // Extract the single mesh's geometry and material
+    let singleMesh;
+    powerup.traverse(child => {
+        if (child.isMesh && !singleMesh) singleMesh = child;
+    });
+    
+    if (singleMesh) {
+        const instancedMesh = new THREE.InstancedMesh(
+            singleMesh.geometry, 
+            singleMesh.material, 
+            100  // 100 instances in scene
+        );
+        // Position instances as needed...
+    }
+}
 ```
 
 ### 2. Complex Animated Models (Characters)
