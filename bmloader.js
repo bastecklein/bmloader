@@ -30,12 +30,10 @@ import {
     Color,
     FrontSide,
     InstancedMesh,
-    Object3D,
-    Matrix4
+    Object3D
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
-import * as BufferGeometryUtils from "three/addons/utils/BufferGeometryUtils.js"
 
 import { Parser } from "expr-eval";
 
@@ -217,7 +215,7 @@ class RenderBasicModel extends Group {
      * @param {boolean} options.preserveAnimated - Whether to preserve animated objects as separate meshes (default: true)
      */
     optimize(options = {}) {
-        const { instanceThreshold = 3, preserveAnimated = true } = options;
+        const { instanceThreshold = 3, preserveAnimated = true, enableMerging = false } = options;
         
         try {
             console.log('Starting optimization...');
@@ -278,6 +276,7 @@ class RenderBasicModel extends Group {
             }
             
             // Clear current scene but preserve references
+            const preservedChildren = [...this.children];
             while (this.children.length > 0) {
                 this.remove(this.children[0]);
             }
@@ -736,498 +735,20 @@ class RenderBasicModel extends Group {
     }
 
     /**
-     * Automatically determines if a model should be merged based on usage patterns and model characteristics.
-     * This is the intelligent runtime decision system for game engines with user-generated content.
-     * @param {Object} context - Usage context for decision making
-     * @param {number} context.instanceCount - How many times this model will be used in scene
-     * @param {boolean} context.isStatic - Whether model will remain static (no runtime animations)
-     * @param {boolean} context.allowBreaking - Whether breaking changes are acceptable for performance
-     * @param {number} context.framebudgetMs - Available milliseconds per frame for rendering
-     * @returns {Object} Recommendation and reasoning
+     * Prepares a model for scene-level instancing by creating a simplified version
+     * optimized for being instantiated many times (like powerups, trees, etc.)
+     * @param {Object} options - Options for scene preparation
+     * @returns {Object} Information about the prepared model
      */
-    shouldAutoMerge(context = {}) {
-        const {
-            instanceCount = 1,
-            isStatic = null, // null means auto-detect
-            allowBreaking = false,
-            performanceThreshold = 0.5 // 50% performance improvement needed
-        } = context;
+    prepareForSceneInstancing(options = {}) {
+        const { mergeAll = true, preserveNamed = false } = options;
         
-        console.log('🤖 Auto-merge analysis starting...');
-        
-        // Step 1: Analyze model structure
-        const structure = this.analyzeModelStructure();
-        const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
-        const mergeAnalysis = this.createMergedMesh({ dryRun: true });
-        
-        if (!mergeAnalysis.canMerge) {
-            return {
-                shouldMerge: false,
-                reason: mergeAnalysis.reason,
-                confidence: 1.0,
-                riskLevel: 'none'
-            };
-        }
-        
-        const drawCallSavings = mergeAnalysis.analysis.savings || 0;
-        const originalDrawCalls = mergeAnalysis.analysis.originalDrawCalls || 0;
-        
-        // Step 2: Risk Assessment
-        let riskLevel = 'low';
-        const risks = [];
-        
-        if (hasAnimations) {
-            riskLevel = 'critical';
-            risks.push('Model has animations - merging will break them completely');
-        }
-        
-        // Only consider named objects risky if animations exist (indicating potential runtime control)
-        if (hasAnimations && structure.totalVariables > 15) {
-            riskLevel = 'critical'; // Already critical due to animations
-            risks.push(`Model has ${structure.totalVariables} named objects AND animations - runtime control likely needed`);
-        } else if (!hasAnimations && structure.totalVariables > 30) {
-            // Much higher threshold for static models - lots of names is just organization
-            riskLevel = 'medium';
-            risks.push(`Model has ${structure.totalVariables} named objects - may need runtime control (but no animations detected)`);
-        }
-        
-        if (originalDrawCalls <= 2) {
-            risks.push('Model is already well-optimized - minimal benefit from merging');
-        }
-        
-        // Step 3: Performance Benefit Calculation
-        const estimatedPerformanceGain = (drawCallSavings * instanceCount) / (originalDrawCalls * instanceCount);
-        const isWorthwhile = estimatedPerformanceGain >= performanceThreshold;
-        
-        // Step 4: Usage Pattern Analysis
-        const isHighInstanceCount = instanceCount >= 10;
-        const isMassiveInstanceCount = instanceCount >= 50;
-        
-        // Step 5: Auto-detection logic
-        let shouldMerge = false;
-        let confidence = 0;
-        let reasoning = [];
-        
-        if (riskLevel === 'critical') {
-            // Never merge if critical risks (animations)
-            shouldMerge = false;
-            confidence = 1.0;
-            reasoning.push('❌ CRITICAL: Animations detected - merging forbidden');
-        } else if (isMassiveInstanceCount && originalDrawCalls > 3) {
-            // Always merge for massive instance counts with reasonable complexity
-            shouldMerge = true;
-            confidence = 0.95;
-            reasoning.push('✅ MASSIVE SCALE: 50+ instances - performance critical, no animations');
-        } else if (isHighInstanceCount && drawCallSavings > 2) {
-            // Merge for high instance counts with decent savings
-            shouldMerge = true;
-            confidence = 0.85;
-            reasoning.push('✅ HIGH BENEFIT: 10+ instances with 2+ draw call savings, no animations');
-        } else if (instanceCount >= 5 && originalDrawCalls >= 5 && isStatic !== false) {
-            // More aggressive for moderate usage - no animations means likely static
-            shouldMerge = true;
-            confidence = 0.75;
-            reasoning.push('✅ GOOD CANDIDATE: 5+ instances of multi-mesh static model');
-        } else if (instanceCount >= 3 && originalDrawCalls >= 8 && !hasAnimations) {
-            // Even lower threshold for complex static models
-            shouldMerge = true;
-            confidence = 0.7;
-            reasoning.push('✅ COMPLEX STATIC: 3+ instances of complex model, no animations detected');
-        } else if (riskLevel === 'medium' && !allowBreaking) {
-            // Only skip medium risk if user explicitly doesn't allow breaking
-            shouldMerge = false;
-            confidence = 0.6;
-            reasoning.push('⚠️ MEDIUM RISK: Many named objects detected - merging disabled for safety');
-        } else {
-            // Default: don't merge unless proven beneficial
-            shouldMerge = false;
-            confidence = 0.5;
-            reasoning.push('🤔 UNCERTAIN: Insufficient benefit or unclear usage pattern');
-        }
-        
-        // Override for user preference
-        if (allowBreaking && isWorthwhile) {
-            shouldMerge = true;
-            reasoning.push('🎯 USER OVERRIDE: Breaking changes allowed and performance gain sufficient');
-        }
-        
-        console.log(`🤖 Auto-merge decision: ${shouldMerge ? 'MERGE' : 'SKIP'} (confidence: ${Math.round(confidence * 100)}%)`);
-        
-        return {
-            shouldMerge,
-            confidence,
-            riskLevel,
-            risks,
-            reasoning,
-            analysis: {
-                instanceCount,
-                originalDrawCalls,
-                drawCallSavings,
-                estimatedPerformanceGain: Math.round(estimatedPerformanceGain * 100),
-                hasAnimations,
-                namedObjectCount: structure.totalVariables,
-                geometryComplexity: originalDrawCalls > 10 ? 'high' : originalDrawCalls > 5 ? 'medium' : 'low'
-            },
-            recommendation: shouldMerge ? 
-                'Model is suitable for merging - significant performance benefit expected' :
-                'Model should remain unmerged - risks outweigh benefits or insufficient performance gain'
-        };
-    }
-
-    /**
-     * Creates a completely merged version of the model - converts the entire Group into a single Mesh.
-     * This is the ultimate optimization for static models but completely breaks animations and variable references.
-     * Use only for static models that will be used many times in a scene.
-     * @param {Object} options - Merging options
-     * @returns {Object} Analysis and merged mesh (if successful)
-     */
-    createMergedMesh(options = {}) {
-        const { preserveUVs = true, preserveColors = true, dryRun = true, allowMerging = false } = options;
-        
-        console.log('Analyzing model for geometry merging...');
-        
-        if (!dryRun && !allowMerging) {
-            console.warn('Merging disabled by default for safety. Use allowMerging: true to enable actual changes.');
-            return;
-        }
-        
-        // Check if model has animations
-        const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
-        if (hasAnimations) {
-            console.error('Cannot merge animated models - animations would be completely broken');
-            return {
-                canMerge: false,
-                reason: 'Model has animations',
-                recommendation: 'Only use merging on completely static models'
-            };
-        }
-        
-        // Collect all meshes with their materials
-        const meshes = [];
-        const materialGroups = new Map();
-        let totalVertices = 0;
-        let totalFaces = 0;
-        
-        this.traverse((child) => {
-            if (child.isMesh) {
-                meshes.push(child);
-                totalVertices += child.geometry.attributes.position.count;
-                totalFaces += child.geometry.index ? child.geometry.index.count / 3 : child.geometry.attributes.position.count / 3;
-                
-                // Group by material for potential multi-material merging
-                const matKey = this.getSimpleMaterialKey(child.material);
-                if (!materialGroups.has(matKey)) {
-                    materialGroups.set(matKey, []);
-                }
-                materialGroups.get(matKey).push(child);
-            }
-        });
-        
-        if (meshes.length === 0) {
-            return {
-                canMerge: false,
-                reason: 'No meshes found to merge'
-            };
-        }
-        
-        if (meshes.length === 1) {
-            console.log('Model already consists of a single mesh');
-            return {
-                canMerge: true,
-                alreadyOptimal: true,
-                currentMesh: meshes[0],
-                analysis: {
-                    originalDrawCalls: 1,
-                    mergedDrawCalls: 1,
-                    savings: 0,
-                    totalVertices: totalVertices,
-                    totalFaces: Math.floor(totalFaces)
-                }
-            };
-        }
-        
-        console.log(`Found ${meshes.length} meshes to potentially merge:`);
-        console.log(`- Total vertices: ${totalVertices}`);
-        console.log(`- Total faces: ${Math.floor(totalFaces)}`);
-        console.log(`- Unique materials: ${materialGroups.size}`);
-        
-        // Analysis for different merging strategies
-        const analysis = {
-            originalDrawCalls: meshes.length,
-            materials: materialGroups.size,
-            canMergeAll: materialGroups.size === 1,
-            multiMaterialMerge: materialGroups.size > 1,
-            worstCaseVertices: totalVertices,
-            estimatedFaces: Math.floor(totalFaces)
-        };
-        
-        if (dryRun) {
-            console.log('Merge analysis results:');
-            if (analysis.canMergeAll) {
-                console.log(`✅ Perfect merge candidate: All meshes use same material`);
-                console.log(`   Draw calls: ${meshes.length} → 1 (${meshes.length - 1} saved)`);
-            } else {
-                console.log(`⚠️ Multi-material model: ${analysis.materials} different materials`);
-                console.log(`   Draw calls: ${meshes.length} → ${analysis.materials} (${meshes.length - analysis.materials} saved)`);
-            }
-            console.log(`   Vertices: ${totalVertices}, Faces: ${Math.floor(totalFaces)}`);
-            console.log(`   Warning: Merging will completely break bmDat.variables and animations!`);
-            
-            return {
-                canMerge: true,
-                analysis: {
-                    ...analysis,
-                    mergedDrawCalls: analysis.canMergeAll ? 1 : analysis.materials,
-                    savings: analysis.canMergeAll ? meshes.length - 1 : meshes.length - analysis.materials,
-                    totalVertices: totalVertices,
-                    totalFaces: Math.floor(totalFaces)
-                }
-            };
-        }
-        
-        // Actually perform the merge
-        if (!allowMerging) {
-            console.error('Merging not explicitly allowed');
-            return;
-        }
-        
-        console.log('Performing geometry merge...');
-        
-        try {
-            let mergedMesh;
-            
-            if (analysis.canMergeAll) {
-                // Single material - simple merge
-                mergedMesh = this.createSingleMaterialMerge(meshes, { preserveUVs, preserveColors });
-            } else {
-                // Multiple materials - more complex merge
-                mergedMesh = this.createMultiMaterialMerge(materialGroups, { preserveUVs, preserveColors });
-            }
-            
-            if (mergedMesh) {
-                // Replace all children with the merged mesh(es)
-                while (this.children.length > 0) {
-                    this.remove(this.children[0]);
-                }
-                
-                // Handle both single mesh and array of meshes
-                if (Array.isArray(mergedMesh)) {
-                    // Multi-material merge returns array of meshes
-                    mergedMesh.forEach(mesh => this.add(mesh));
-                } else {
-                    // Single material merge returns single mesh
-                    this.add(mergedMesh);
-                }
-                
-                console.log(`✅ Merge successful!`);
-                console.log(`   Draw calls reduced: ${meshes.length} → ${Array.isArray(mergedMesh) ? mergedMesh.length : 1}`);
-                console.log(`   ⚠️ WARNING: bmDat.variables now broken! Model is no longer animatable.`);
-                
-                return {
-                    success: true,
-                    mergedMesh: mergedMesh,
-                    analysis: {
-                        originalDrawCalls: meshes.length,
-                        finalDrawCalls: Array.isArray(mergedMesh) ? mergedMesh.length : 1,
-                        savings: Array.isArray(mergedMesh) ? meshes.length - mergedMesh.length : meshes.length - 1
-                    }
-                };
-            }
-            
-        } catch (error) {
-            console.error('Merge failed:', error);
-            return {
-                canMerge: false,
-                reason: 'Merge operation failed',
-                error: error.message
-            };
-        }
-    }
-
-    /**
-     * Merge meshes that all share the same material
-     */
-    createSingleMaterialMerge(meshes, options = {}) {
-        const { preserveUVs = true, preserveColors = true } = options;
-        
-        console.log(`\n🔧 Starting single material merge with ${meshes.length} meshes`);
-        
-        // First, ensure all objects in the entire model have their matrices properly updated
-        // This is critical because group transforms might have been applied via variables
-        // after the initial hierarchy was built
-        console.log('📐 Updating world matrices for entire model hierarchy...');
-        this.updateMatrixWorld(true);
-        
-        // Clone and transform geometries to preserve their complete transform hierarchy
-        const geometries = meshes.map((mesh, index) => {
-            console.log(`\n--- Processing Mesh ${index} ---`);
-            
-            const geometry = mesh.geometry.clone();
-            
-            // Before any updates, log current state
-            console.log(`BEFORE matrix updates:`);
-            console.log(`  Position: (${mesh.position.x.toFixed(3)}, ${mesh.position.y.toFixed(3)}, ${mesh.position.z.toFixed(3)})`);
-            console.log(`  Rotation: (${(mesh.rotation.x * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.y * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.z * 180/Math.PI).toFixed(1)}°)`);
-            console.log(`  Scale: (${mesh.scale.x.toFixed(3)}, ${mesh.scale.y.toFixed(3)}, ${mesh.scale.z.toFixed(3)})`);
-            
-            // Investigate parent hierarchy to find source of negative scaling
-            console.log(`🔍 Investigating parent hierarchy:`);
-            let currentParent = mesh.parent;
-            let hierarchyLevel = 1;
-            while (currentParent && hierarchyLevel <= 5) {
-                console.log(`  Parent Level ${hierarchyLevel}: ${currentParent.constructor.name}`);
-                console.log(`    Position: (${currentParent.position.x.toFixed(3)}, ${currentParent.position.y.toFixed(3)}, ${currentParent.position.z.toFixed(3)})`);
-                console.log(`    Rotation: (${(currentParent.rotation.x * 180/Math.PI).toFixed(1)}°, ${(currentParent.rotation.y * 180/Math.PI).toFixed(1)}°, ${(currentParent.rotation.z * 180/Math.PI).toFixed(1)}°)`);
-                console.log(`    Scale: (${currentParent.scale.x.toFixed(3)}, ${currentParent.scale.y.toFixed(3)}, ${currentParent.scale.z.toFixed(3)})`);
-                
-                if (currentParent === this) {
-                    console.log(`    -> This is the root model (RenderBasicModel)`);
-                    break;
-                }
-                currentParent = currentParent.parent;
-                hierarchyLevel++;
-            }
-            
-            // CRITICAL: Force update of this specific mesh's matrix from its transform properties
-            console.log(`⚙️ Calling mesh.updateMatrix()...`);
-            mesh.updateMatrix();
-            
-            console.log(`⚙️ Calling mesh.updateMatrixWorld(true)...`);
-            mesh.updateMatrixWorld(true);
-            
-            // After updates, log new state
-            console.log(`AFTER matrix updates:`);
-            if (mesh.matrixWorld && mesh.matrixWorld.elements) {
-                const mw = mesh.matrixWorld.elements;
-                console.log(`  World Matrix [0-3]: [${mw[0].toFixed(3)}, ${mw[1].toFixed(3)}, ${mw[2].toFixed(3)}, ${mw[3].toFixed(3)}]`);
-                console.log(`  World Matrix [12-15]: [${mw[12].toFixed(3)}, ${mw[13].toFixed(3)}, ${mw[14].toFixed(3)}, ${mw[15].toFixed(3)}]`);
-            }
-            
-            // Test world position calculation
-            const worldPos = mesh.getWorldPosition(new Vector3());
-            console.log(`  Calculated World Position: (${worldPos.x.toFixed(3)}, ${worldPos.y.toFixed(3)}, ${worldPos.z.toFixed(3)})`);
-            
-            // Instead of using matrixWorld (which includes the problematic parent scaling),
-            // let's build the transform step by step, excluding any negative root scaling
-            let transformMatrix = new Matrix4();
-            
-            // Start with the mesh's local matrix (position, rotation, scale)
-            mesh.updateMatrix();
-            transformMatrix.copy(mesh.matrix);
-            
-            // Walk up the parent hierarchy and accumulate transforms, but check for problematic scaling
-            let parent = mesh.parent;
-            const parentMatrices = [];
-            
-            while (parent && parent !== this) {
-                parent.updateMatrix();
-                parentMatrices.unshift(parent.matrix); // Add to front so we apply in correct order
-                parent = parent.parent;
-            }
-            
-            // Apply parent transforms in correct order
-            for (const parentMatrix of parentMatrices) {
-                transformMatrix.premultiply(parentMatrix);
-            }
-            
-            // Check if root model has problematic scaling and compensate
-            if (this.scale.x < 0 || this.scale.y < 0 || this.scale.z < 0) {
-                console.log(`⚠️ ROOT MODEL HAS NEGATIVE SCALING: (${this.scale.x.toFixed(3)}, ${this.scale.y.toFixed(3)}, ${this.scale.z.toFixed(3)})`);
-                console.log(`   This is likely causing the visual issues - applying compensation`);
-                
-                // Create a compensation matrix to counteract the root negative scaling
-                const compensationMatrix = new Matrix4();
-                compensationMatrix.makeScale(
-                    this.scale.x < 0 ? -1 : 1,
-                    this.scale.y < 0 ? -1 : 1,
-                    this.scale.z < 0 ? -1 : 1
-                );
-                transformMatrix.premultiply(compensationMatrix);
-            }
-            
-            console.log(`🎯 Applying custom-built transform matrix to geometry...`);
-            // Apply the complete transform to the geometry
-            geometry.applyMatrix4(transformMatrix);
-            console.log(`✅ Transform applied to geometry ${index}`);
-            
-            // Preserve attributes if requested
-            if (!preserveUVs && geometry.attributes.uv) {
-                geometry.deleteAttribute('uv');
-            }
-            if (!preserveColors && geometry.attributes.color) {
-                geometry.deleteAttribute('color');
-            }
-            
-            return geometry;
-        });
-        
-        try {
-            console.log(`🔗 Merging ${geometries.length} transformed geometries...`);
-            const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries);
-            const mergedMesh = new Mesh(mergedGeometry, meshes[0].material);
-            
-            // The merged mesh should be positioned at the origin since we baked all transforms into geometry
-            mergedMesh.position.set(0, 0, 0);
-            mergedMesh.rotation.set(0, 0, 0);
-            mergedMesh.scale.set(1, 1, 1);
-            
-            console.log(`✅ Single material merge completed successfully`);
-            
-            // Clean up cloned geometries
-            geometries.forEach(geo => geo.dispose());
-            
-            return mergedMesh;
-        } catch (error) {
-            console.error('💥 Single material merge failed:', error);
-            // Clean up on failure
-            geometries.forEach(geo => geo.dispose());
-            throw error;
-        }
-    }
-
-    /**
-     * Merge meshes with multiple materials - results in multiple meshes, one per material
-     */
-    createMultiMaterialMerge(materialGroups, options = {}) {
-        const { preserveUVs = true, preserveColors = true } = options;
-        const mergedMeshes = [];
-        
-        try {
-            for (const [, meshes] of materialGroups.entries()) {
-                if (meshes.length === 1) {
-                    // Only one mesh with this material, no need to merge
-                    mergedMeshes.push(meshes[0]);
-                } else {
-                    // Multiple meshes with same material, merge them
-                    const mergedMesh = this.createSingleMaterialMerge(meshes, { preserveUVs, preserveColors });
-                    mergedMeshes.push(mergedMesh);
-                }
-            }
-            
-            return mergedMeshes;
-        } catch (error) {
-            console.error('Multi-material merge failed:', error);
-            throw error;
-        }
-    }
-
-    /**
-     * Analyzes model structure for potential scene-level optimizations.
-     * NOTE: BMLoader models are hierarchical Groups and cannot be directly instanced
-     * at the scene level like simple meshes. This method provides analysis only.
-     * @returns {Object} Analysis of the model's structure and optimization potential
-     */
-    prepareForSceneInstancing() {
-        console.log('Analyzing model structure for scene-level considerations...');
+        console.log('Preparing model for scene-level instancing...');
         
         const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
         if (hasAnimations) {
-            console.warn('Model has animations - not suitable for scene-level optimization');
-            return { 
-                canInstance: false, 
-                reason: 'Model has animations',
-                recommendation: 'Use multiple individual model instances instead'
-            };
+            console.warn('Model has animations - scene instancing may not work correctly');
+            return { canInstance: false, reason: 'Model has animations' };
         }
         
         // Count current draw calls
@@ -1236,23 +757,28 @@ class RenderBasicModel extends Group {
             if (child.isMesh) drawCalls++;
         });
         
-        console.warn('ARCHITECTURE LIMITATION: BMLoader models are Groups, not single meshes');
-        console.warn('Scene-level instancing requires manual implementation with simple geometries');
+        if (mergeAll && !preserveNamed) {
+            console.log(`Model has ${drawCalls} draw calls - could be reduced to 1 with full merging`);
+            return {
+                canInstance: true,
+                currentDrawCalls: drawCalls,
+                potentialDrawCalls: 1,
+                savings: drawCalls - 1,
+                recommendation: `When used ${drawCalls * 10}+ times in scene, consider geometry merging`
+            };
+        }
+        
+        // Analyze what can be merged while preserving named objects
+        const analysis = this.optimizeSafe({ dryRun: true, instanceThreshold: 2 });
         
         return {
-            canInstance: false,
-            reason: 'BMLoader models are hierarchical Groups, not instanceable meshes',
+            canInstance: true,
             currentDrawCalls: drawCalls,
-            analysisOnly: true,
-            recommendation: drawCalls === 1 
-                ? 'Consider extracting geometry/material and creating manual InstancedMesh'
-                : `Complex model (${drawCalls} draw calls) - not suitable for scene instancing`,
-            alternativeApproaches: [
-                'Create simplified Three.js geometry version for repeated use',
-                'Use Level-of-Detail (LOD) system for distant objects',
-                'Implement object pooling for dynamic objects',
-                'Consider using sprites for very distant/small objects'
-            ]
+            potentialDrawCalls: drawCalls - (analysis.potentialSavings || 0),
+            savings: analysis.potentialSavings || 0,
+            recommendation: analysis.potentialSavings > 0 
+                ? `Can reduce from ${drawCalls} to ${drawCalls - analysis.potentialSavings} draw calls per instance`
+                : 'Model already optimized for instancing'
         };
     }
 
