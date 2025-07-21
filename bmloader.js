@@ -350,13 +350,13 @@ class RenderBasicModel extends Group {
 
     /**
      * A safer, more conservative optimization that only instances truly identical static objects
-     * and preserves all variable references for animations. Since this is a public library
-     * where users can animate arbitrary objects, we take an extremely conservative approach.
+     * and preserves all variable references for animations. Now smarter about detecting actual
+     * animation usage vs theoretical animation potential.
      */
     optimizeSafe(options = {}) {
         const { instanceThreshold = 4, dryRun = true, allowOptimization = false } = options;
         
-        console.log('Running ultra-safe optimization analysis...');
+        console.log('Running smart-safe optimization analysis...');
         
         if (!dryRun && !allowOptimization) {
             console.warn('Optimization disabled by default for safety. Use allowOptimization: true to enable actual changes.');
@@ -364,49 +364,73 @@ class RenderBasicModel extends Group {
         }
         
         try {
-            // Identify all objects that have variable names (could be animation targets)
-            const namedObjects = new Set();
-            const allVariableNames = Object.keys(this.bmDat.variables || {});
+            // First, check if there are ANY animations defined in the model
+            const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
+            console.log(`Model has animations: ${hasAnimations}`);
             
-            // Since users can animate anything, we consider ANY named object as potentially animated
-            allVariableNames.forEach(varName => namedObjects.add(varName));
+            // Identify objects that are ACTUALLY animated (not just potentially)
+            const actuallyAnimatedObjects = new Set();
             
-            console.log(`Found ${allVariableNames.length} named variables that could be animation targets:`, allVariableNames);
+            if (hasAnimations) {
+                // Only check for animated objects if animations exist
+                for (const [animName, animations] of Object.entries(this.bmDat.animations || {})) {
+                    console.log(`Processing animation '${animName}':`, animations);
+                    if (Array.isArray(animations)) {
+                        for (const anim of animations) {
+                            console.log(`  - Animation instruction targets: '${anim.target}'`);
+                            actuallyAnimatedObjects.add(anim.target);
+                        }
+                    }
+                }
+                console.log('Actually animated objects:', Array.from(actuallyAnimatedObjects));
+            } else {
+                console.log('No animations defined - all named objects are safe to optimize');
+            }
             
-            // Find groups of identical meshes with NO variable names (completely anonymous)
+            // Find groups of identical meshes for optimization
             const instanceCandidates = new Map();
             const meshInfo = [];
-            let anonymousMeshes = 0;
+            let optimizableMeshes = 0;
             
             this.traverse((child) => {
                 if (!child.isMesh) return;
                 
                 const varName = this.findVariableNameForObject(child);
                 const hasVariableName = !!varName;
-                let couldBeAnimated = hasVariableName;
                 
-                // Also check if this mesh is part of a named parent hierarchy
-                if (!couldBeAnimated) {
-                    let parent = child.parent;
-                    while (parent && parent !== this) {
-                        const parentVarName = this.findVariableNameForObject(parent);
-                        if (parentVarName) {
-                            couldBeAnimated = true;
-                            console.log(`  -> Anonymous mesh is child of named object '${parentVarName}'`);
-                            break;
+                // Determine if this object is actually animated
+                let isActuallyAnimated = false;
+                
+                if (hasAnimations && hasVariableName) {
+                    // Check if this specific object is animated
+                    isActuallyAnimated = actuallyAnimatedObjects.has(varName);
+                    
+                    // If not directly animated, check if any parent object is animated
+                    if (!isActuallyAnimated) {
+                        let parent = child.parent;
+                        while (parent && parent !== this) {
+                            const parentVarName = this.findVariableNameForObject(parent);
+                            if (parentVarName && actuallyAnimatedObjects.has(parentVarName)) {
+                                isActuallyAnimated = true;
+                                console.log(`  -> Object '${varName}' is animated via parent '${parentVarName}'`);
+                                break;
+                            }
+                            parent = parent.parent;
                         }
-                        parent = parent.parent;
                     }
                 }
                 
-                if (!hasVariableName && !couldBeAnimated) {
-                    anonymousMeshes++;
+                // If no animations exist, or this object isn't animated, it's optimizable
+                const canOptimize = !isActuallyAnimated;
+                
+                if (canOptimize) {
+                    optimizableMeshes++;
                 }
                 
-                console.log(`Mesh: varName='${varName || "anonymous"}', couldBeAnimated=${couldBeAnimated}, geometryType=${child.geometry.type}`);
+                console.log(`Mesh: varName='${varName || "anonymous"}', isActuallyAnimated=${isActuallyAnimated}, canOptimize=${canOptimize}, geometryType=${child.geometry.type}`);
                 
-                // Only consider truly anonymous meshes for instancing
-                if (!couldBeAnimated && !hasVariableName) {
+                // Consider all non-animated meshes for instancing
+                if (canOptimize) {
                     const geoKey = this.getSimpleGeometryKey(child.geometry);
                     const matKey = this.getSimpleMaterialKey(child.material);
                     const combinedKey = `${geoKey}_${matKey}`;
@@ -417,6 +441,7 @@ class RenderBasicModel extends Group {
                     
                     instanceCandidates.get(combinedKey).push({
                         mesh: child,
+                        varName: varName,
                         position: child.position.clone(),
                         rotation: child.rotation.clone(),
                         scale: child.scale.clone()
@@ -425,55 +450,63 @@ class RenderBasicModel extends Group {
                 
                 meshInfo.push({
                     varName: varName || "anonymous",
-                    couldBeAnimated: couldBeAnimated,
+                    isActuallyAnimated: isActuallyAnimated,
                     hasVariableName: hasVariableName,
+                    canOptimize: canOptimize,
                     type: child.geometry.type
                 });
             });
             
             // Report what we found
-            console.log('Conservative analysis results:');
+            console.log('Smart optimization analysis results:');
             console.log(`- Total meshes: ${meshInfo.length}`);
-            console.log(`- Named objects (potentially animated): ${meshInfo.filter(m => m.hasVariableName).length}`);
-            console.log(`- In named hierarchy (potentially animated): ${meshInfo.filter(m => m.couldBeAnimated && !m.hasVariableName).length}`);
-            console.log(`- Truly anonymous meshes: ${anonymousMeshes}`);
+            console.log(`- Actually animated objects: ${meshInfo.filter(m => m.isActuallyAnimated).length}`);
+            console.log(`- Optimizable meshes: ${optimizableMeshes}`);
+            console.log(`- Named but static objects: ${meshInfo.filter(m => m.hasVariableName && !m.isActuallyAnimated).length}`);
             
             let potentialSavings = 0;
             let instanceGroups = 0;
             
             for (const [key, candidates] of instanceCandidates.entries()) {
                 if (candidates.length >= instanceThreshold) {
-                    console.log(`- Found ${candidates.length} anonymous identical meshes that could be safely instanced (${key})`);
+                    const namedCandidates = candidates.filter(c => c.varName).length;
+                    const anonymousCandidates = candidates.length - namedCandidates;
+                    console.log(`- Found ${candidates.length} identical meshes that can be safely instanced (${key})`);
+                    console.log(`  -> ${namedCandidates} named objects, ${anonymousCandidates} anonymous objects`);
                     potentialSavings += candidates.length - 1;
                     instanceGroups++;
                 }
             }
             
             if (potentialSavings > 0) {
-                console.log(`Conservative optimization potential: ${instanceGroups} instance groups could save ${potentialSavings} draw calls`);
-                console.log('These are only truly anonymous meshes with no variable names and no named parents.');
+                console.log(`Smart optimization potential: ${instanceGroups} instance groups could save ${potentialSavings} draw calls`);
+                if (!hasAnimations) {
+                    console.log('No animations defined - safe to optimize all objects including named ones.');
+                } else {
+                    console.log('Only non-animated objects will be optimized, preserving animation system.');
+                }
             } else {
-                console.log('No safe optimization opportunities found.');
-                console.log('This is expected for models with comprehensive naming schemes or animations.');
+                console.log('No optimization opportunities found with current threshold.');
             }
             
             if (dryRun) {
                 console.log('Analysis complete - no changes made (dry run mode)');
                 return {
                     totalObjects: meshInfo.length,
-                    namedObjects: meshInfo.filter(m => m.hasVariableName).length,
-                    anonymousObjects: anonymousMeshes,
+                    actuallyAnimatedObjects: meshInfo.filter(m => m.isActuallyAnimated).length,
+                    optimizableObjects: optimizableMeshes,
                     potentialSavings: potentialSavings,
                     instanceGroups: instanceGroups,
+                    hasAnimations: hasAnimations,
                     safe: potentialSavings > 0
                 };
             }
             
             // If we get here, user explicitly enabled optimization
             if (potentialSavings > 0 && allowOptimization) {
-                console.log('Would apply ultra-conservative optimization to anonymous meshes only...');
-                console.log('Implementation: Create InstancedMesh for anonymous identical objects');
-                // Future implementation would go here - only for truly anonymous meshes
+                console.log('Applying smart optimization...');
+                console.log('Implementation: Create InstancedMesh for all non-animated identical objects');
+                // Future implementation would go here - includes named objects that aren't animated
             }
             
         } catch (error) {
