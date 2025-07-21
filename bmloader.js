@@ -30,7 +30,8 @@ import {
     Color,
     FrontSide,
     InstancedMesh,
-    Object3D
+    Object3D,
+    Matrix4
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -1069,11 +1070,22 @@ class RenderBasicModel extends Group {
             console.log(`  Rotation: (${(mesh.rotation.x * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.y * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.z * 180/Math.PI).toFixed(1)}°)`);
             console.log(`  Scale: (${mesh.scale.x.toFixed(3)}, ${mesh.scale.y.toFixed(3)}, ${mesh.scale.z.toFixed(3)})`);
             
-            // Log matrix before update
-            if (mesh.matrix && mesh.matrix.elements) {
-                const m = mesh.matrix.elements;
-                console.log(`  Local Matrix [0-3]: [${m[0].toFixed(3)}, ${m[1].toFixed(3)}, ${m[2].toFixed(3)}, ${m[3].toFixed(3)}]`);
-                console.log(`  Local Matrix [12-15]: [${m[12].toFixed(3)}, ${m[13].toFixed(3)}, ${m[14].toFixed(3)}, ${m[15].toFixed(3)}]`);
+            // Investigate parent hierarchy to find source of negative scaling
+            console.log(`🔍 Investigating parent hierarchy:`);
+            let currentParent = mesh.parent;
+            let hierarchyLevel = 1;
+            while (currentParent && hierarchyLevel <= 5) {
+                console.log(`  Parent Level ${hierarchyLevel}: ${currentParent.constructor.name}`);
+                console.log(`    Position: (${currentParent.position.x.toFixed(3)}, ${currentParent.position.y.toFixed(3)}, ${currentParent.position.z.toFixed(3)})`);
+                console.log(`    Rotation: (${(currentParent.rotation.x * 180/Math.PI).toFixed(1)}°, ${(currentParent.rotation.y * 180/Math.PI).toFixed(1)}°, ${(currentParent.rotation.z * 180/Math.PI).toFixed(1)}°)`);
+                console.log(`    Scale: (${currentParent.scale.x.toFixed(3)}, ${currentParent.scale.y.toFixed(3)}, ${currentParent.scale.z.toFixed(3)})`);
+                
+                if (currentParent === this) {
+                    console.log(`    -> This is the root model (RenderBasicModel)`);
+                    break;
+                }
+                currentParent = currentParent.parent;
+                hierarchyLevel++;
             }
             
             // CRITICAL: Force update of this specific mesh's matrix from its transform properties
@@ -1085,12 +1097,6 @@ class RenderBasicModel extends Group {
             
             // After updates, log new state
             console.log(`AFTER matrix updates:`);
-            if (mesh.matrix && mesh.matrix.elements) {
-                const m = mesh.matrix.elements;
-                console.log(`  Updated Local Matrix [0-3]: [${m[0].toFixed(3)}, ${m[1].toFixed(3)}, ${m[2].toFixed(3)}, ${m[3].toFixed(3)}]`);
-                console.log(`  Updated Local Matrix [12-15]: [${m[12].toFixed(3)}, ${m[13].toFixed(3)}, ${m[14].toFixed(3)}, ${m[15].toFixed(3)}]`);
-            }
-            
             if (mesh.matrixWorld && mesh.matrixWorld.elements) {
                 const mw = mesh.matrixWorld.elements;
                 console.log(`  World Matrix [0-3]: [${mw[0].toFixed(3)}, ${mw[1].toFixed(3)}, ${mw[2].toFixed(3)}, ${mw[3].toFixed(3)}]`);
@@ -1101,10 +1107,45 @@ class RenderBasicModel extends Group {
             const worldPos = mesh.getWorldPosition(new Vector3());
             console.log(`  Calculated World Position: (${worldPos.x.toFixed(3)}, ${worldPos.y.toFixed(3)}, ${worldPos.z.toFixed(3)})`);
             
-            // Use the matrixWorld which should include all parent transforms
-            const transformMatrix = mesh.matrixWorld.clone();
+            // Instead of using matrixWorld (which includes the problematic parent scaling),
+            // let's build the transform step by step, excluding any negative root scaling
+            let transformMatrix = new Matrix4();
             
-            console.log(`🎯 Applying transform matrix to geometry...`);
+            // Start with the mesh's local matrix (position, rotation, scale)
+            mesh.updateMatrix();
+            transformMatrix.copy(mesh.matrix);
+            
+            // Walk up the parent hierarchy and accumulate transforms, but check for problematic scaling
+            let parent = mesh.parent;
+            const parentMatrices = [];
+            
+            while (parent && parent !== this) {
+                parent.updateMatrix();
+                parentMatrices.unshift(parent.matrix); // Add to front so we apply in correct order
+                parent = parent.parent;
+            }
+            
+            // Apply parent transforms in correct order
+            for (const parentMatrix of parentMatrices) {
+                transformMatrix.premultiply(parentMatrix);
+            }
+            
+            // Check if root model has problematic scaling and compensate
+            if (this.scale.x < 0 || this.scale.y < 0 || this.scale.z < 0) {
+                console.log(`⚠️ ROOT MODEL HAS NEGATIVE SCALING: (${this.scale.x.toFixed(3)}, ${this.scale.y.toFixed(3)}, ${this.scale.z.toFixed(3)})`);
+                console.log(`   This is likely causing the visual issues - applying compensation`);
+                
+                // Create a compensation matrix to counteract the root negative scaling
+                const compensationMatrix = new Matrix4();
+                compensationMatrix.makeScale(
+                    this.scale.x < 0 ? -1 : 1,
+                    this.scale.y < 0 ? -1 : 1,
+                    this.scale.z < 0 ? -1 : 1
+                );
+                transformMatrix.premultiply(compensationMatrix);
+            }
+            
+            console.log(`🎯 Applying custom-built transform matrix to geometry...`);
             // Apply the complete transform to the geometry
             geometry.applyMatrix4(transformMatrix);
             console.log(`✅ Transform applied to geometry ${index}`);
