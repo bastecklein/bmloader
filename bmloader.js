@@ -30,7 +30,8 @@ import {
     Color,
     FrontSide,
     InstancedMesh,
-    Object3D
+    Object3D,
+    Matrix4
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -1049,14 +1050,31 @@ class RenderBasicModel extends Group {
     createSingleMaterialMerge(meshes, options = {}) {
         const { preserveUVs = true, preserveColors = true } = options;
         
-        // Clone and transform geometries to preserve their local transforms
+        // Clone and transform geometries to preserve their complete transform hierarchy
         const geometries = meshes.map(mesh => {
             const geometry = mesh.geometry.clone();
             
-            // Apply the mesh's local transform (position, rotation, scale) to the geometry
-            // This preserves the mesh's transform relative to its parent
-            mesh.updateMatrix();
-            geometry.applyMatrix4(mesh.matrix);
+            // Apply the complete transform chain from mesh to the BMLoader root
+            // This includes the mesh's local transform AND any parent group transforms
+            const transformMatrix = new Matrix4();
+            
+            // Build transform chain from this mesh up to the BMLoader model (but not beyond)
+            let currentObject = mesh;
+            const matrices = [];
+            
+            while (currentObject && currentObject !== this) {
+                currentObject.updateMatrix();
+                matrices.unshift(currentObject.matrix.clone());
+                currentObject = currentObject.parent;
+            }
+            
+            // Combine all transforms in the hierarchy
+            for (const matrix of matrices) {
+                transformMatrix.premultiply(matrix);
+            }
+            
+            // Apply the complete transform to the geometry
+            geometry.applyMatrix4(transformMatrix);
             
             // Preserve attributes if requested
             if (!preserveUVs && geometry.attributes.uv) {
@@ -1073,7 +1091,7 @@ class RenderBasicModel extends Group {
             const mergedGeometry = BufferGeometryUtils.mergeGeometries(geometries);
             const mergedMesh = new Mesh(mergedGeometry, meshes[0].material);
             
-            // The merged mesh should be positioned at the origin since we baked transforms into geometry
+            // The merged mesh should be positioned at the origin since we baked all transforms into geometry
             mergedMesh.position.set(0, 0, 0);
             mergedMesh.rotation.set(0, 0, 0);
             mergedMesh.scale.set(1, 1, 1);
