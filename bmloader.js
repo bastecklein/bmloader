@@ -354,7 +354,7 @@ class RenderBasicModel extends Group {
      * animation usage vs theoretical animation potential.
      */
     optimizeSafe(options = {}) {
-        const { instanceThreshold = 4, dryRun = true, allowOptimization = false } = options;
+        const { instanceThreshold = 2, dryRun = true, allowOptimization = false } = options;
         
         console.log('Running smart-safe optimization analysis...');
         
@@ -367,6 +367,15 @@ class RenderBasicModel extends Group {
             // First, check if there are ANY animations defined in the model
             const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
             console.log(`Model has animations: ${hasAnimations}`);
+            
+            // For simple models (few objects), use a lower threshold
+            const totalMeshes = Array.from(this.children).filter(child => child.isMesh || (child.children && child.children.some(c => c.isMesh))).length;
+            let adaptiveThreshold = instanceThreshold;
+            
+            if (totalMeshes <= 5 && !hasAnimations) {
+                adaptiveThreshold = Math.max(2, Math.floor(instanceThreshold / 2));
+                console.log(`Simple model detected (${totalMeshes} objects, no animations) - using adaptive threshold: ${adaptiveThreshold}`);
+            }
             
             // Identify objects that are ACTUALLY animated (not just potentially)
             const actuallyAnimatedObjects = new Set();
@@ -468,7 +477,7 @@ class RenderBasicModel extends Group {
             let instanceGroups = 0;
             
             for (const [key, candidates] of instanceCandidates.entries()) {
-                if (candidates.length >= instanceThreshold) {
+                if (candidates.length >= adaptiveThreshold) {
                     const namedCandidates = candidates.filter(c => c.varName).length;
                     const anonymousCandidates = candidates.length - namedCandidates;
                     console.log(`- Found ${candidates.length} identical meshes that can be safely instanced (${key})`);
@@ -486,7 +495,10 @@ class RenderBasicModel extends Group {
                     console.log('Only non-animated objects will be optimized, preserving animation system.');
                 }
             } else {
-                console.log('No optimization opportunities found with current threshold.');
+                console.log(`No optimization opportunities found with threshold ${adaptiveThreshold}.`);
+                if (totalMeshes <= 5 && !hasAnimations) {
+                    console.log('Note: This simple model may benefit from scene-level instancing when used multiple times.');
+                }
             }
             
             if (dryRun) {
@@ -720,6 +732,54 @@ class RenderBasicModel extends Group {
         };
 
         return recommendations;
+    }
+
+    /**
+     * Prepares a model for scene-level instancing by creating a simplified version
+     * optimized for being instantiated many times (like powerups, trees, etc.)
+     * @param {Object} options - Options for scene preparation
+     * @returns {Object} Information about the prepared model
+     */
+    prepareForSceneInstancing(options = {}) {
+        const { mergeAll = true, preserveNamed = false } = options;
+        
+        console.log('Preparing model for scene-level instancing...');
+        
+        const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
+        if (hasAnimations) {
+            console.warn('Model has animations - scene instancing may not work correctly');
+            return { canInstance: false, reason: 'Model has animations' };
+        }
+        
+        // Count current draw calls
+        let drawCalls = 0;
+        this.traverse((child) => {
+            if (child.isMesh) drawCalls++;
+        });
+        
+        if (mergeAll && !preserveNamed) {
+            console.log(`Model has ${drawCalls} draw calls - could be reduced to 1 with full merging`);
+            return {
+                canInstance: true,
+                currentDrawCalls: drawCalls,
+                potentialDrawCalls: 1,
+                savings: drawCalls - 1,
+                recommendation: `When used ${drawCalls * 10}+ times in scene, consider geometry merging`
+            };
+        }
+        
+        // Analyze what can be merged while preserving named objects
+        const analysis = this.optimizeSafe({ dryRun: true, instanceThreshold: 2 });
+        
+        return {
+            canInstance: true,
+            currentDrawCalls: drawCalls,
+            potentialDrawCalls: drawCalls - (analysis.potentialSavings || 0),
+            savings: analysis.potentialSavings || 0,
+            recommendation: analysis.potentialSavings > 0 
+                ? `Can reduce from ${drawCalls} to ${drawCalls - analysis.potentialSavings} draw calls per instance`
+                : 'Model already optimized for instancing'
+        };
     }
 
     /**
