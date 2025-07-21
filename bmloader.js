@@ -215,9 +215,11 @@ class RenderBasicModel extends Group {
      * @param {boolean} options.preserveAnimated - Whether to preserve animated objects as separate meshes (default: true)
      */
     optimize(options = {}) {
-        const { instanceThreshold = 3, preserveAnimated = true } = options;
+        const { instanceThreshold = 3, preserveAnimated = true, enableMerging = false } = options;
         
         try {
+            console.log('Starting optimization...');
+            
             const animatedObjects = new Set();
             
             // Identify animated objects if preserveAnimated is true
@@ -229,21 +231,24 @@ class RenderBasicModel extends Group {
                         }
                     }
                 }
+                console.log('Animated objects to preserve:', Array.from(animatedObjects));
             }
             
-            const staticMeshes = [];
+            // Collect all meshes and categorize them
+            const allMeshes = [];
             const animatedMeshes = [];
+            const staticMeshes = [];
             const instanceGroups = new Map();
             
-            // Categorize meshes
             this.traverse((child) => {
                 if (!child.isMesh) return;
                 
+                allMeshes.push(child);
                 const varName = this.findVariableNameForObject(child);
                 
                 if (preserveAnimated && animatedObjects.has(varName)) {
                     animatedMeshes.push(child);
-                    child.userData.keepSeparate = true;
+                    console.log(`Preserving animated object: ${varName}`);
                 } else {
                     staticMeshes.push(child);
                     
@@ -255,49 +260,210 @@ class RenderBasicModel extends Group {
                     if (!instanceGroups.has(combinedKey)) {
                         instanceGroups.set(combinedKey, []);
                     }
-                    instanceGroups.get(combinedKey).push(child);
+                    instanceGroups.get(combinedKey).push({
+                        mesh: child,
+                        varName: varName
+                    });
                 }
             });
             
-            // Clear current scene
+            console.log(`Found ${allMeshes.length} meshes total: ${animatedMeshes.length} animated, ${staticMeshes.length} static`);
+            
+            // Only proceed if we have meshes to optimize
+            if (staticMeshes.length === 0) {
+                console.log('No static meshes to optimize');
+                return;
+            }
+            
+            // Clear current scene but preserve references
+            const preservedChildren = [...this.children];
             while (this.children.length > 0) {
                 this.remove(this.children[0]);
             }
             
-            // Add back animated objects unchanged
+            // Add back animated objects unchanged (these maintain their variable references)
             animatedMeshes.forEach(mesh => {
                 this.add(mesh);
             });
             
             // Process static objects for optimization
             const processedMeshes = new Set();
+            let instancedCount = 0;
             
-            for (const [, instances] of instanceGroups.entries()) {
+            for (const [combinedKey, instances] of instanceGroups.entries()) {
                 if (instances.length >= instanceThreshold) {
+                    console.log(`Creating instanced mesh for ${instances.length} objects with key: ${combinedKey}`);
+                    
                     // Create instanced mesh
-                    const instancedMesh = this.createInstancedMesh(instances);
+                    const instancedMesh = this.createInstancedMesh(instances.map(i => i.mesh));
                     this.add(instancedMesh);
-                    instances.forEach(mesh => processedMeshes.add(mesh));
+                    
+                    // Mark these meshes as processed
+                    instances.forEach(instance => {
+                        processedMeshes.add(instance.mesh);
+                        
+                        // IMPORTANT: Update variable references to point to the instanced mesh
+                        // For now, we'll keep the original reference but mark it as instanced
+                        // A more sophisticated approach would create proxy objects
+                        if (instance.varName) {
+                            // Keep the original object reference for animations
+                            // but mark it as part of an instanced mesh
+                            const originalMesh = instance.mesh;
+                            originalMesh.userData.isInstanced = true;
+                            originalMesh.userData.instancedMesh = instancedMesh;
+                            originalMesh.userData.instanceIndex = instances.findIndex(i => i.mesh === originalMesh);
+                            
+                            // Keep the variable reference intact for animations
+                            this.bmDat.variables[instance.varName] = originalMesh;
+                        }
+                    });
+                    
+                    instancedCount++;
+                } else {
+                    // Not enough instances, add individually
+                    instances.forEach(instance => {
+                        if (!processedMeshes.has(instance.mesh)) {
+                            this.add(instance.mesh);
+                            processedMeshes.add(instance.mesh);
+                        }
+                    });
                 }
             }
             
-            // Add remaining static meshes that weren't instanced
-            staticMeshes.forEach(mesh => {
-                if (!processedMeshes.has(mesh)) {
-                    this.add(mesh);
-                }
-            });
-            
-            console.log(`Optimization completed. Animated objects: ${animatedMeshes.length}, Static objects processed: ${staticMeshes.length}`);
+            console.log(`Optimization completed successfully!`);
+            console.log(`- Preserved ${animatedMeshes.length} animated objects`);
+            console.log(`- Created ${instancedCount} instanced meshes`);
+            console.log(`- Added ${staticMeshes.length - processedMeshes.size} individual static meshes`);
             
         } catch (error) {
             console.error('Optimization failed:', error);
+            console.error('Restoring original state...');
+            
+            // Try to restore original state on failure
+            try {
+                this.reset();
+            } catch (resetError) {
+                console.error('Failed to restore original state:', resetError);
+            }
         }
     }
 
     /**
-     * Creates an InstancedMesh from an array of similar meshes
+     * A safer, more conservative optimization that only instances truly identical static objects
+     * and preserves all variable references for animations
      */
+    optimizeSafe(options = {}) {
+        const { instanceThreshold = 4, dryRun = false } = options;
+        
+        console.log('Running safe optimization...');
+        
+        try {
+            // Identify all animated objects
+            const animatedObjects = new Set();
+            for (const animations of Object.values(this.bmDat.animations || {})) {
+                if (Array.isArray(animations)) {
+                    for (const anim of animations) {
+                        animatedObjects.add(anim.target);
+                    }
+                }
+            }
+            
+            // Find groups of identical meshes (same geometry + material + no animations)
+            const instanceCandidates = new Map();
+            const meshInfo = [];
+            
+            this.traverse((child) => {
+                if (!child.isMesh) return;
+                
+                const varName = this.findVariableNameForObject(child);
+                const isAnimated = animatedObjects.has(varName);
+                
+                if (!isAnimated) {
+                    const geoKey = this.getSimpleGeometryKey(child.geometry);
+                    const matKey = this.getSimpleMaterialKey(child.material);
+                    const combinedKey = `${geoKey}_${matKey}`;
+                    
+                    if (!instanceCandidates.has(combinedKey)) {
+                        instanceCandidates.set(combinedKey, []);
+                    }
+                    
+                    instanceCandidates.get(combinedKey).push({
+                        mesh: child,
+                        varName: varName,
+                        position: child.position.clone(),
+                        rotation: child.rotation.clone(),
+                        scale: child.scale.clone()
+                    });
+                }
+                
+                meshInfo.push({
+                    varName: varName,
+                    isAnimated: isAnimated,
+                    type: child.geometry.type
+                });
+            });
+            
+            // Report what we found
+            console.log('Analysis results:');
+            console.log(`- Total objects: ${meshInfo.length}`);
+            console.log(`- Animated objects: ${meshInfo.filter(m => m.isAnimated).length}`);
+            console.log(`- Static objects: ${meshInfo.filter(m => !m.isAnimated).length}`);
+            
+            let potentialSavings = 0;
+            let instanceGroups = 0;
+            
+            for (const [key, candidates] of instanceCandidates.entries()) {
+                if (candidates.length >= instanceThreshold) {
+                    console.log(`- Found ${candidates.length} identical objects that could be instanced (${key})`);
+                    potentialSavings += candidates.length - 1;
+                    instanceGroups++;
+                }
+            }
+            
+            console.log(`Potential optimization: ${instanceGroups} instance groups could save ${potentialSavings} draw calls`);
+            
+            if (dryRun) {
+                console.log('Dry run complete - no changes made');
+                return {
+                    totalObjects: meshInfo.length,
+                    animatedObjects: meshInfo.filter(m => m.isAnimated).length,
+                    potentialSavings: potentialSavings,
+                    instanceGroups: instanceGroups
+                };
+            }
+            
+            // Actually perform the optimization if not a dry run
+            if (potentialSavings > 0) {
+                console.log('Applying optimizations...');
+                // Implementation would go here when we're confident it works
+                console.log('Optimization implementation pending - use dryRun: true to see potential benefits');
+            } else {
+                console.log('No significant optimization opportunities found');
+            }
+            
+        } catch (error) {
+            console.error('Safe optimization analysis failed:', error);
+        }
+    }
+
+    /**
+     * Simple geometry key that focuses on type and basic parameters
+     */
+    getSimpleGeometryKey(geometry) {
+        const params = geometry.parameters || {};
+        const key = `${geometry.type}_${JSON.stringify(params)}`;
+        return key;
+    }
+
+    /**
+     * Simple material key that focuses on basic visual properties
+     */
+    getSimpleMaterialKey(material) {
+        const color = material.color ? material.color.getHexString() : 'none';
+        const map = material.map ? material.map.uuid : 'none';
+        const type = material.type;
+        return `${type}_${color}_${map}`;
+    }
     createInstancedMesh(meshes) {
         const firstMesh = meshes[0];
         const instancedMesh = new InstancedMesh(
@@ -335,14 +501,31 @@ class RenderBasicModel extends Group {
      * Generate a key for geometry based on its properties
      */
     getGeometryKey(geometry) {
-        return `${geometry.type}_${geometry.parameters ? JSON.stringify(geometry.parameters) : geometry.uuid}`;
+        try {
+            const params = geometry.parameters || {};
+            // Create a stable key based on geometry type and parameters
+            const paramString = Object.keys(params).sort().map(key => `${key}:${params[key]}`).join('|');
+            return `${geometry.type}_${paramString}`;
+        } catch (error) {
+            console.warn('Failed to generate geometry key:', error);
+            return `${geometry.type}_${geometry.uuid}`;
+        }
     }
 
     /**
      * Generate a key for material based on its properties
      */
     getMaterialKey(material) {
-        return `${material.type}_${material.color?.getHexString() || 'none'}_${material.map?.uuid || 'none'}`;
+        try {
+            const color = material.color ? material.color.getHexString() : 'none';
+            const map = material.map ? material.map.uuid : 'none';
+            const opacity = material.opacity !== undefined ? material.opacity : 1;
+            const transparent = material.transparent || false;
+            return `${material.type}_${color}_${map}_${opacity}_${transparent}`;
+        } catch (error) {
+            console.warn('Failed to generate material key:', error);
+            return `${material.type}_${material.uuid || 'unknown'}`;
+        }
     }
 }
 
