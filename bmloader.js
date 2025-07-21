@@ -1004,11 +1004,19 @@ class RenderBasicModel extends Group {
             }
             
             if (mergedMesh) {
-                // Replace all children with the merged mesh
+                // Replace all children with the merged mesh(es)
                 while (this.children.length > 0) {
                     this.remove(this.children[0]);
                 }
-                this.add(mergedMesh);
+                
+                // Handle both single mesh and array of meshes
+                if (Array.isArray(mergedMesh)) {
+                    // Multi-material merge returns array of meshes
+                    mergedMesh.forEach(mesh => this.add(mesh));
+                } else {
+                    // Single material merge returns single mesh
+                    this.add(mergedMesh);
+                }
                 
                 console.log(`✅ Merge successful!`);
                 console.log(`   Draw calls reduced: ${meshes.length} → ${Array.isArray(mergedMesh) ? mergedMesh.length : 1}`);
