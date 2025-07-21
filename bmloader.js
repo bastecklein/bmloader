@@ -218,8 +218,7 @@ class RenderBasicModel extends Group {
         const { instanceThreshold = 3, preserveAnimated = true, enableMerging = false } = options;
         
         try {
-            console.log('Starting optimization...');
-            
+
             const animatedObjects = new Set();
             
             // Identify animated objects if preserveAnimated is true
@@ -231,7 +230,7 @@ class RenderBasicModel extends Group {
                         }
                     }
                 }
-                console.log('Animated objects to preserve:', Array.from(animatedObjects));
+
             }
             
             // Collect all meshes and categorize them
@@ -248,7 +247,6 @@ class RenderBasicModel extends Group {
                 
                 if (preserveAnimated && animatedObjects.has(varName)) {
                     animatedMeshes.push(child);
-                    console.log(`Preserving animated object: ${varName}`);
                 } else {
                     staticMeshes.push(child);
                     
@@ -267,11 +265,10 @@ class RenderBasicModel extends Group {
                 }
             });
             
-            console.log(`Found ${allMeshes.length} meshes total: ${animatedMeshes.length} animated, ${staticMeshes.length} static`);
-            
+
             // Only proceed if we have meshes to optimize
             if (staticMeshes.length === 0) {
-                console.log('No static meshes to optimize');
+
                 return;
             }
             
@@ -292,8 +289,7 @@ class RenderBasicModel extends Group {
             
             for (const [combinedKey, instances] of instanceGroups.entries()) {
                 if (instances.length >= instanceThreshold) {
-                    console.log(`Creating instanced mesh for ${instances.length} objects with key: ${combinedKey}`);
-                    
+
                     // Create instanced mesh
                     const instancedMesh = this.createInstancedMesh(instances.map(i => i.mesh));
                     this.add(instancedMesh);
@@ -330,11 +326,7 @@ class RenderBasicModel extends Group {
                 }
             }
             
-            console.log(`Optimization completed successfully!`);
-            console.log(`- Preserved ${animatedMeshes.length} animated objects`);
-            console.log(`- Created ${instancedCount} instanced meshes`);
-            console.log(`- Added ${staticMeshes.length - processedMeshes.size} individual static meshes`);
-            
+
         } catch (error) {
             console.error('Optimization failed:', error);
             console.error('Restoring original state...');
@@ -355,9 +347,7 @@ class RenderBasicModel extends Group {
      */
     optimizeSafe(options = {}) {
         const { instanceThreshold = 2, dryRun = true, allowOptimization = false } = options;
-        
-        console.log('Running smart-safe optimization analysis...');
-        
+
         if (!dryRun && !allowOptimization) {
             console.warn('Optimization disabled by default for safety. Use allowOptimization: true to enable actual changes.');
             return;
@@ -366,15 +356,13 @@ class RenderBasicModel extends Group {
         try {
             // First, check if there are ANY animations defined in the model
             const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
-            console.log(`Model has animations: ${hasAnimations}`);
-            
+
             // For simple models (few objects), use a lower threshold
             const totalMeshes = Array.from(this.children).filter(child => child.isMesh || (child.children && child.children.some(c => c.isMesh))).length;
             let adaptiveThreshold = instanceThreshold;
             
             if (totalMeshes <= 5 && !hasAnimations) {
                 adaptiveThreshold = Math.max(2, Math.floor(instanceThreshold / 2));
-                console.log(`Simple model detected (${totalMeshes} objects, no animations) - using adaptive threshold: ${adaptiveThreshold}`);
             }
             
             // Identify objects that are ACTUALLY animated (not just potentially)
@@ -383,17 +371,15 @@ class RenderBasicModel extends Group {
             if (hasAnimations) {
                 // Only check for animated objects if animations exist
                 for (const [animName, animations] of Object.entries(this.bmDat.animations || {})) {
-                    console.log(`Processing animation '${animName}':`, animations);
+
                     if (Array.isArray(animations)) {
                         for (const anim of animations) {
-                            console.log(`  - Animation instruction targets: '${anim.target}'`);
+
                             actuallyAnimatedObjects.add(anim.target);
                         }
                     }
                 }
-                console.log('Actually animated objects:', Array.from(actuallyAnimatedObjects));
-            } else {
-                console.log('No animations defined - all named objects are safe to optimize');
+
             }
             
             // Find groups of identical meshes for optimization
@@ -421,7 +407,7 @@ class RenderBasicModel extends Group {
                             const parentVarName = this.findVariableNameForObject(parent);
                             if (parentVarName && actuallyAnimatedObjects.has(parentVarName)) {
                                 isActuallyAnimated = true;
-                                console.log(`  -> Object '${varName}' is animated via parent '${parentVarName}'`);
+
                                 break;
                             }
                             parent = parent.parent;
@@ -436,8 +422,7 @@ class RenderBasicModel extends Group {
                     optimizableMeshes++;
                 }
                 
-                console.log(`Mesh: varName='${varName || "anonymous"}', isActuallyAnimated=${isActuallyAnimated}, canOptimize=${canOptimize}, geometryType=${child.geometry.type}`);
-                
+
                 // Consider all non-animated meshes for instancing
                 if (canOptimize) {
                     const geoKey = this.getSimpleGeometryKey(child.geometry);
@@ -466,13 +451,7 @@ class RenderBasicModel extends Group {
                 });
             });
             
-            // Report what we found
-            console.log('Smart optimization analysis results:');
-            console.log(`- Total meshes: ${meshInfo.length}`);
-            console.log(`- Actually animated objects: ${meshInfo.filter(m => m.isActuallyAnimated).length}`);
-            console.log(`- Optimizable meshes: ${optimizableMeshes}`);
-            console.log(`- Named but static objects: ${meshInfo.filter(m => m.hasVariableName && !m.isActuallyAnimated).length}`);
-            
+
             let potentialSavings = 0;
             let instanceGroups = 0;
             
@@ -480,29 +459,16 @@ class RenderBasicModel extends Group {
                 if (candidates.length >= adaptiveThreshold) {
                     const namedCandidates = candidates.filter(c => c.varName).length;
                     const anonymousCandidates = candidates.length - namedCandidates;
-                    console.log(`- Found ${candidates.length} identical meshes that can be safely instanced (${key})`);
-                    console.log(`  -> ${namedCandidates} named objects, ${anonymousCandidates} anonymous objects`);
+
                     potentialSavings += candidates.length - 1;
                     instanceGroups++;
                 }
             }
             
-            if (potentialSavings > 0) {
-                console.log(`Smart optimization potential: ${instanceGroups} instance groups could save ${potentialSavings} draw calls`);
-                if (!hasAnimations) {
-                    console.log('No animations defined - safe to optimize all objects including named ones.');
-                } else {
-                    console.log('Only non-animated objects will be optimized, preserving animation system.');
-                }
-            } else {
-                console.log(`No optimization opportunities found with threshold ${adaptiveThreshold}.`);
-                if (totalMeshes <= 5 && !hasAnimations) {
-                    console.log('Note: This simple model may benefit from scene-level instancing when used multiple times.');
-                }
-            }
+
             
             if (dryRun) {
-                console.log('Analysis complete - no changes made (dry run mode)');
+
                 return {
                     totalObjects: meshInfo.length,
                     actuallyAnimatedObjects: meshInfo.filter(m => m.isActuallyAnimated).length,
@@ -514,12 +480,7 @@ class RenderBasicModel extends Group {
                 };
             }
             
-            // If we get here, user explicitly enabled optimization
-            if (potentialSavings > 0 && allowOptimization) {
-                console.log('Applying smart optimization...');
-                console.log('Implementation: Create InstancedMesh for all non-animated identical objects');
-                // Future implementation would go here - includes named objects that aren't animated
-            }
+
             
         } catch (error) {
             console.error('Safe optimization analysis failed:', error);
@@ -743,8 +704,7 @@ class RenderBasicModel extends Group {
     prepareForSceneInstancing(options = {}) {
         const { mergeAll = true, preserveNamed = false } = options;
         
-        console.log('Preparing model for scene-level instancing...');
-        
+
         const hasAnimations = Object.keys(this.bmDat.animations || {}).length > 0;
         if (hasAnimations) {
             console.warn('Model has animations - scene instancing may not work correctly');
@@ -758,7 +718,7 @@ class RenderBasicModel extends Group {
         });
         
         if (mergeAll && !preserveNamed) {
-            console.log(`Model has ${drawCalls} draw calls - could be reduced to 1 with full merging`);
+
             return {
                 canInstance: true,
                 currentDrawCalls: drawCalls,
@@ -2211,7 +2171,6 @@ async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat, renderM
         return imCanvas.toDataURL("image/webp", imgQuality);
     }
 
-    console.log("GRAB A FRAME!");
 }
 
 function getTypeFromImageUrl(imgURL) {
