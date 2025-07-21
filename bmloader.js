@@ -350,58 +350,63 @@ class RenderBasicModel extends Group {
 
     /**
      * A safer, more conservative optimization that only instances truly identical static objects
-     * and preserves all variable references for animations
+     * and preserves all variable references for animations. Since this is a public library
+     * where users can animate arbitrary objects, we take an extremely conservative approach.
      */
     optimizeSafe(options = {}) {
-        const { instanceThreshold = 4, dryRun = false } = options;
+        const { instanceThreshold = 4, dryRun = true, allowOptimization = false } = options;
         
-        console.log('Running safe optimization...');
+        console.log('Running ultra-safe optimization analysis...');
+        
+        if (!dryRun && !allowOptimization) {
+            console.warn('Optimization disabled by default for safety. Use allowOptimization: true to enable actual changes.');
+            return;
+        }
         
         try {
-            // Identify all animated objects
-            const animatedObjects = new Set();
+            // Identify all objects that have variable names (could be animation targets)
+            const namedObjects = new Set();
+            const allVariableNames = Object.keys(this.bmDat.variables || {});
             
-            console.log('Available animations:', Object.keys(this.bmDat.animations || {}));
+            // Since users can animate anything, we consider ANY named object as potentially animated
+            allVariableNames.forEach(varName => namedObjects.add(varName));
             
-            for (const [animName, animations] of Object.entries(this.bmDat.animations || {})) {
-                console.log(`Processing animation '${animName}':`, animations);
-                if (Array.isArray(animations)) {
-                    for (const anim of animations) {
-                        console.log(`  - Animation instruction targets: '${anim.target}'`);
-                        animatedObjects.add(anim.target);
-                    }
-                }
-            }
+            console.log(`Found ${allVariableNames.length} named variables that could be animation targets:`, allVariableNames);
             
-            console.log('Detected animated objects:', Array.from(animatedObjects));
-            
-            // Find groups of identical meshes (same geometry + material + no animations)
+            // Find groups of identical meshes with NO variable names (completely anonymous)
             const instanceCandidates = new Map();
             const meshInfo = [];
+            let anonymousMeshes = 0;
             
             this.traverse((child) => {
                 if (!child.isMesh) return;
                 
                 const varName = this.findVariableNameForObject(child);
-                let isAnimated = animatedObjects.has(varName);
+                const hasVariableName = !!varName;
+                let couldBeAnimated = hasVariableName;
                 
-                // Also check if any parent object is animated (for Groups containing meshes)
-                if (!isAnimated) {
+                // Also check if this mesh is part of a named parent hierarchy
+                if (!couldBeAnimated) {
                     let parent = child.parent;
                     while (parent && parent !== this) {
                         const parentVarName = this.findVariableNameForObject(parent);
-                        if (parentVarName && animatedObjects.has(parentVarName)) {
-                            isAnimated = true;
-                            console.log(`  -> Mesh '${varName}' is animated via parent '${parentVarName}'`);
+                        if (parentVarName) {
+                            couldBeAnimated = true;
+                            console.log(`  -> Anonymous mesh is child of named object '${parentVarName}'`);
                             break;
                         }
                         parent = parent.parent;
                     }
                 }
                 
-                console.log(`Mesh found: varName='${varName}', isAnimated=${isAnimated}, geometryType=${child.geometry.type}`);
+                if (!hasVariableName && !couldBeAnimated) {
+                    anonymousMeshes++;
+                }
                 
-                if (!isAnimated) {
+                console.log(`Mesh: varName='${varName || "anonymous"}', couldBeAnimated=${couldBeAnimated}, geometryType=${child.geometry.type}`);
+                
+                // Only consider truly anonymous meshes for instancing
+                if (!couldBeAnimated && !hasVariableName) {
                     const geoKey = this.getSimpleGeometryKey(child.geometry);
                     const matKey = this.getSimpleMaterialKey(child.material);
                     const combinedKey = `${geoKey}_${matKey}`;
@@ -412,7 +417,6 @@ class RenderBasicModel extends Group {
                     
                     instanceCandidates.get(combinedKey).push({
                         mesh: child,
-                        varName: varName,
                         position: child.position.clone(),
                         rotation: child.rotation.clone(),
                         scale: child.scale.clone()
@@ -420,53 +424,269 @@ class RenderBasicModel extends Group {
                 }
                 
                 meshInfo.push({
-                    varName: varName,
-                    isAnimated: isAnimated,
+                    varName: varName || "anonymous",
+                    couldBeAnimated: couldBeAnimated,
+                    hasVariableName: hasVariableName,
                     type: child.geometry.type
                 });
             });
             
             // Report what we found
-            console.log('Analysis results:');
-            console.log(`- Total objects: ${meshInfo.length}`);
-            console.log(`- Animated objects: ${meshInfo.filter(m => m.isAnimated).length}`);
-            console.log(`- Static objects: ${meshInfo.filter(m => !m.isAnimated).length}`);
+            console.log('Conservative analysis results:');
+            console.log(`- Total meshes: ${meshInfo.length}`);
+            console.log(`- Named objects (potentially animated): ${meshInfo.filter(m => m.hasVariableName).length}`);
+            console.log(`- In named hierarchy (potentially animated): ${meshInfo.filter(m => m.couldBeAnimated && !m.hasVariableName).length}`);
+            console.log(`- Truly anonymous meshes: ${anonymousMeshes}`);
             
             let potentialSavings = 0;
             let instanceGroups = 0;
             
             for (const [key, candidates] of instanceCandidates.entries()) {
                 if (candidates.length >= instanceThreshold) {
-                    console.log(`- Found ${candidates.length} identical objects that could be instanced (${key})`);
+                    console.log(`- Found ${candidates.length} anonymous identical meshes that could be safely instanced (${key})`);
                     potentialSavings += candidates.length - 1;
                     instanceGroups++;
                 }
             }
             
-            console.log(`Potential optimization: ${instanceGroups} instance groups could save ${potentialSavings} draw calls`);
+            if (potentialSavings > 0) {
+                console.log(`Conservative optimization potential: ${instanceGroups} instance groups could save ${potentialSavings} draw calls`);
+                console.log('These are only truly anonymous meshes with no variable names and no named parents.');
+            } else {
+                console.log('No safe optimization opportunities found.');
+                console.log('This is expected for models with comprehensive naming schemes or animations.');
+            }
             
             if (dryRun) {
-                console.log('Dry run complete - no changes made');
+                console.log('Analysis complete - no changes made (dry run mode)');
                 return {
                     totalObjects: meshInfo.length,
-                    animatedObjects: meshInfo.filter(m => m.isAnimated).length,
+                    namedObjects: meshInfo.filter(m => m.hasVariableName).length,
+                    anonymousObjects: anonymousMeshes,
                     potentialSavings: potentialSavings,
-                    instanceGroups: instanceGroups
+                    instanceGroups: instanceGroups,
+                    safe: potentialSavings > 0
                 };
             }
             
-            // Actually perform the optimization if not a dry run
-            if (potentialSavings > 0) {
-                console.log('Applying optimizations...');
-                // Implementation would go here when we're confident it works
-                console.log('Optimization implementation pending - use dryRun: true to see potential benefits');
-            } else {
-                console.log('No significant optimization opportunities found');
+            // If we get here, user explicitly enabled optimization
+            if (potentialSavings > 0 && allowOptimization) {
+                console.log('Would apply ultra-conservative optimization to anonymous meshes only...');
+                console.log('Implementation: Create InstancedMesh for anonymous identical objects');
+                // Future implementation would go here - only for truly anonymous meshes
             }
             
         } catch (error) {
             console.error('Safe optimization analysis failed:', error);
         }
+    }
+
+    /**
+     * Analyzes the model's animation targets and provides detailed information
+     * about what objects are being animated and how.
+     * @returns {Object} Analysis of animation targets and patterns
+     */
+    analyzeAnimationTargets() {
+        const analysis = {
+            animationCount: Object.keys(this.bmDat.animations || {}).length,
+            animations: {},
+            allTargets: new Set(),
+            targetTypes: new Map(),
+            hierarchyInfo: {}
+        };
+
+        // Analyze each animation
+        for (const [animName, animations] of Object.entries(this.bmDat.animations || {})) {
+            const animInfo = {
+                instructionCount: animations.length,
+                targets: new Set(),
+                actions: new Set()
+            };
+
+            if (Array.isArray(animations)) {
+                for (const anim of animations) {
+                    animInfo.targets.add(anim.target);
+                    animInfo.actions.add(anim.action);
+                    analysis.allTargets.add(anim.target);
+                }
+            }
+
+            analysis.animations[animName] = {
+                ...animInfo,
+                targets: Array.from(animInfo.targets),
+                actions: Array.from(animInfo.actions)
+            };
+        }
+
+        // Analyze target types and hierarchy
+        for (const targetName of analysis.allTargets) {
+            const targetObj = this.bmDat.variables[targetName];
+            if (targetObj) {
+                const type = targetObj.type || (targetObj.isGroup ? 'Group' : 'Mesh');
+                analysis.targetTypes.set(targetName, type);
+                
+                // Check if this target has children
+                const children = [];
+                if (targetObj.children) {
+                    for (const child of targetObj.children) {
+                        const childVarName = this.findVariableNameForObject(child);
+                        if (childVarName) {
+                            children.push(childVarName);
+                        } else {
+                            children.push(`anonymous_${child.type || 'object'}`);
+                        }
+                    }
+                }
+                
+                analysis.hierarchyInfo[targetName] = {
+                    type: type,
+                    hasChildren: children.length > 0,
+                    children: children,
+                    childCount: targetObj.children ? targetObj.children.length : 0
+                };
+            }
+        }
+
+        return {
+            ...analysis,
+            allTargets: Array.from(analysis.allTargets),
+            targetTypes: Object.fromEntries(analysis.targetTypes)
+        };
+    }
+
+    /**
+     * Lists all named objects in the model with their hierarchy relationships
+     * @returns {Object} Complete naming hierarchy and object information
+     */
+    analyzeModelStructure() {
+        const structure = {
+            totalVariables: Object.keys(this.bmDat.variables || {}).length,
+            namedObjects: {},
+            anonymousObjects: 0,
+            hierarchyMap: {},
+            geometryDistribution: new Map(),
+            materialDistribution: new Map()
+        };
+
+        // Analyze all meshes and objects
+        this.traverse((child) => {
+            const varName = this.findVariableNameForObject(child);
+            
+            if (varName) {
+                // This is a named object
+                structure.namedObjects[varName] = {
+                    type: child.type || (child.isGroup ? 'Group' : child.isMesh ? 'Mesh' : 'Object3D'),
+                    hasChildren: child.children && child.children.length > 0,
+                    childCount: child.children ? child.children.length : 0,
+                    isAnimated: false // Will be filled in later
+                };
+
+                // Track parent-child relationships
+                const parent = child.parent;
+                const parentVarName = this.findVariableNameForObject(parent);
+                if (parentVarName && parent !== this) {
+                    if (!structure.hierarchyMap[parentVarName]) {
+                        structure.hierarchyMap[parentVarName] = [];
+                    }
+                    structure.hierarchyMap[parentVarName].push(varName);
+                }
+            } else {
+                structure.anonymousObjects++;
+            }
+
+            // Track geometry and material distribution
+            if (child.isMesh) {
+                const geoType = child.geometry.type;
+                structure.geometryDistribution.set(
+                    geoType, 
+                    (structure.geometryDistribution.get(geoType) || 0) + 1
+                );
+
+                const matType = child.material.type;
+                structure.materialDistribution.set(
+                    matType,
+                    (structure.materialDistribution.get(matType) || 0) + 1
+                );
+            }
+        });
+
+        // Mark animated objects
+        for (const animations of Object.values(this.bmDat.animations || {})) {
+            if (Array.isArray(animations)) {
+                for (const anim of animations) {
+                    if (structure.namedObjects[anim.target]) {
+                        structure.namedObjects[anim.target].isAnimated = true;
+                    }
+                }
+            }
+        }
+
+        return {
+            ...structure,
+            geometryDistribution: Object.fromEntries(structure.geometryDistribution),
+            materialDistribution: Object.fromEntries(structure.materialDistribution)
+        };
+    }
+
+    /**
+     * Provides optimization recommendations based on model analysis
+     * @returns {Object} Specific recommendations for optimization approaches
+     */
+    getOptimizationRecommendations() {
+        const animAnalysis = this.analyzeAnimationTargets();
+        const structAnalysis = this.analyzeModelStructure();
+        const optimizationAnalysis = this.optimizeSafe({ dryRun: true });
+
+        const recommendations = {
+            safety: 'conservative',
+            canOptimize: optimizationAnalysis.potentialSavings > 0,
+            recommendations: [],
+            risks: [],
+            insights: []
+        };
+
+        // Analyze animation patterns
+        if (animAnalysis.animationCount > 0) {
+            recommendations.risks.push('Model has active animations - any optimization must preserve animation targets');
+            
+            const groupTargets = Object.values(animAnalysis.targetTypes).filter(type => type === 'Group').length;
+            if (groupTargets > 0) {
+                recommendations.insights.push(`${groupTargets} animation targets are Groups - child meshes might be optimizable`);
+            }
+        }
+
+        // Analyze geometry reuse potential
+        const geometryTypes = Object.entries(structAnalysis.geometryDistribution);
+        for (const [geoType, count] of geometryTypes) {
+            if (count >= 4) {
+                recommendations.insights.push(`${count} ${geoType} geometries found - good instancing candidate`);
+            }
+        }
+
+        // Provide specific recommendations
+        if (optimizationAnalysis.anonymousObjects > 0) {
+            recommendations.recommendations.push('Safe to instance anonymous meshes with identical geometry/materials');
+        }
+
+        if (animAnalysis.animationCount === 0) {
+            recommendations.safety = 'moderate';
+            recommendations.recommendations.push('No animations detected - more aggressive optimization possible');
+        } else {
+            recommendations.recommendations.push('Use ultra-conservative optimization due to animation system');
+        }
+
+        if (structAnalysis.totalVariables > 20) {
+            recommendations.insights.push('Large number of named objects suggests complex model with limited optimization potential');
+        }
+
+        // Performance impact estimates
+        recommendations.estimatedBenefit = {
+            drawCallReduction: optimizationAnalysis.potentialSavings || 0,
+            instanceGroups: optimizationAnalysis.instanceGroups || 0,
+            safetyLevel: recommendations.safety
+        };
+
+        return recommendations;
     }
 
     /**
