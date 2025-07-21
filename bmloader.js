@@ -1055,13 +1055,20 @@ class RenderBasicModel extends Group {
         this.updateMatrixWorld(true);
         
         // Clone and transform geometries to preserve their complete transform hierarchy
-        const geometries = meshes.map(mesh => {
+        const geometries = meshes.map((mesh, index) => {
             const geometry = mesh.geometry.clone();
             
-            // For debugging: let's see what we're working with
-            console.log(`Processing mesh at local position: ${mesh.position.x}, ${mesh.position.y}, ${mesh.position.z}`);
-            const worldPos = mesh.getWorldPosition(new Vector3());
-            console.log(`World position: ${worldPos.x.toFixed(3)}, ${worldPos.y.toFixed(3)}, ${worldPos.z.toFixed(3)}`);
+            // CRITICAL: Force update of this specific mesh's matrix from its transform properties
+            // This ensures that any transforms applied via BM script (position, rotation, scale)
+            // are properly reflected in the mesh's matrix before we use matrixWorld
+            mesh.updateMatrix();
+            mesh.updateMatrixWorld(true);
+            
+            // Debug output to verify transforms are being captured
+            if (mesh.position.x !== 0 || mesh.position.y !== 0 || mesh.position.z !== 0 ||
+                mesh.rotation.x !== 0 || mesh.rotation.y !== 0 || mesh.rotation.z !== 0) {
+                console.log(`Mesh ${index}: pos(${mesh.position.x.toFixed(2)}, ${mesh.position.y.toFixed(2)}, ${mesh.position.z.toFixed(2)}) rot(${(mesh.rotation.x * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.y * 180/Math.PI).toFixed(1)}°, ${(mesh.rotation.z * 180/Math.PI).toFixed(1)}°)`);
+            }
             
             // Use the matrixWorld which should include all parent transforms
             const transformMatrix = mesh.matrixWorld.clone();
