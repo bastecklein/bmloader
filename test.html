@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BMLoader Optimization Test</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 20px; 
+            font-family: Arial, sans-serif;
+            background: #222;
+            color: white;
+        }
+        #container { 
+            width: 800px; 
+            height: 600px; 
+            margin: 20px auto;
+            border: 1px solid #444;
+        }
+        #info {
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+            background: #333;
+            border-radius: 8px;
+        }
+        .controls {
+            margin: 20px 0;
+        }
+        button {
+            padding: 10px 20px;
+            margin: 5px;
+            background: #555;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover {
+            background: #666;
+        }
+        #stats {
+            margin-top: 20px;
+            padding: 15px;
+            background: #444;
+            border-radius: 4px;
+        }
+    </style>
+</head>
+<body>
+    <div id="info">
+        <h1>BMLoader Optimization Test</h1>
+        <p>This test creates a scene with both static (red boxes) and animated objects (green sphere, blue cube) to demonstrate the optimization system.</p>
+        
+        <div class="controls">
+            <button onclick="loadModel()">Load Test Model</button>
+            <button onclick="optimizeModel()">Optimize Model</button>
+            <button onclick="startAnimation()">Start Animation</button>
+            <button onclick="stopAnimation()">Stop Animation</button>
+        </div>
+        
+        <div id="stats">
+            <div>Status: <span id="status">Ready</span></div>
+            <div>Objects: <span id="objectCount">0</span></div>
+            <div>Draw Calls: <span id="drawCalls">0</span></div>
+            <div>Animated Objects: <span id="animatedCount">0</span></div>
+        </div>
+    </div>
+
+    <div id="container"></div>
+
+    <script type="module">
+        import * as THREE from 'https://unpkg.com/three@0.158.0/build/three.module.js';
+        import { BMLoader, BasicModel } from './bmloader.js';
+
+        let scene, camera, renderer, renderModel;
+        let animationRunning = false;
+
+        // Initialize Three.js scene
+        function init() {
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(75, 800/600, 0.1, 1000);
+            renderer = new THREE.WebGLRenderer({ antialias: true });
+            renderer.setSize(800, 600);
+            renderer.setClearColor(0x111111);
+            document.getElementById('container').appendChild(renderer.domElement);
+
+            // Add lights
+            const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+            scene.add(ambientLight);
+            
+            const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+            directionalLight.position.set(5, 10, 5);
+            scene.add(directionalLight);
+
+            // Position camera
+            camera.position.set(10, 5, 10);
+            camera.lookAt(3, 1, 0);
+
+            updateStats();
+        }
+
+        async function loadModel() {
+            document.getElementById('status').textContent = 'Loading...';
+            
+            try {
+                // Create test model
+                const testModel = new BasicModel('test-app', '1.0');
+                testModel.script = `
+                    $staticBox1 = box(1,1,1,#ff4444) > position(0,0,0)
+                    $staticBox2 = box(1,1,1,#ff4444) > position(2,0,0)  
+                    $staticBox3 = box(1,1,1,#ff4444) > position(4,0,0)
+                    $staticBox4 = box(1,1,1,#ff4444) > position(6,0,0)
+                    $staticBox5 = box(1,1,1,#ff4444) > position(0,0,2)
+                    $staticBox6 = box(1,1,1,#ff4444) > position(2,0,2)
+                    
+                    $animatedSphere = sphere(0.5,8,8,#44ff44) > position(1,2,0)
+                    $animatedCube = box(0.8,0.8,0.8,#4444ff) > position(3,2,0)
+                    
+                    @spinAnimation = rotateY($animatedSphere, 45, 0, 90, 180, 270, 360)
+                    @bounceAnimation = positionY($animatedCube, 30, 2, 3, 2, 1, 2)
+                `;
+
+                const loader = new BMLoader();
+                renderModel = await new Promise((resolve, reject) => {
+                    loader.load(testModel, resolve, null, reject);
+                });
+
+                // Clear scene and add model
+                scene.clear();
+                
+                // Re-add lights
+                const ambientLight = new THREE.AmbientLight(0x404040, 0.6);
+                scene.add(ambientLight);
+                
+                const directionalLight = new THREE.DirectionalLight(0xffffff, 0.8);
+                directionalLight.position.set(5, 10, 5);
+                scene.add(directionalLight);
+                
+                scene.add(renderModel);
+                
+                document.getElementById('status').textContent = 'Model loaded';
+                updateStats();
+
+            } catch (error) {
+                console.error('Failed to load model:', error);
+                document.getElementById('status').textContent = 'Load failed';
+            }
+        }
+
+        function optimizeModel() {
+            if (!renderModel) {
+                alert('Load a model first!');
+                return;
+            }
+
+            document.getElementById('status').textContent = 'Optimizing...';
+            
+            try {
+                renderModel.optimize({
+                    instanceThreshold: 2, // Lower threshold for testing
+                    preserveAnimated: true
+                });
+                
+                document.getElementById('status').textContent = 'Model optimized';
+                updateStats();
+
+            } catch (error) {
+                console.error('Optimization failed:', error);
+                document.getElementById('status').textContent = 'Optimization failed';
+            }
+        }
+
+        function startAnimation() {
+            if (!renderModel) {
+                alert('Load a model first!');
+                return;
+            }
+
+            renderModel.bmDat.animation = 'spinAnimation';
+            animationRunning = true;
+            document.getElementById('status').textContent = 'Animating...';
+        }
+
+        function stopAnimation() {
+            renderModel.bmDat.animation = null;
+            animationRunning = false;
+            document.getElementById('status').textContent = 'Animation stopped';
+        }
+
+        function updateStats() {
+            let objectCount = 0;
+            let drawCalls = 0;
+            let animatedCount = 0;
+
+            if (renderModel) {
+                renderModel.traverse(child => {
+                    if (child.isMesh || child.isInstancedMesh) {
+                        objectCount++;
+                        drawCalls++;
+                    }
+                });
+
+                animatedCount = Object.keys(renderModel.bmDat.animations || {}).length;
+            }
+
+            document.getElementById('objectCount').textContent = objectCount;
+            document.getElementById('drawCalls').textContent = drawCalls;
+            document.getElementById('animatedCount').textContent = animatedCount;
+        }
+
+        // Animation loop
+        function animate() {
+            requestAnimationFrame(animate);
+
+            if (renderModel && animationRunning) {
+                renderModel.animate(0.016); // ~60fps
+            }
+
+            renderer.render(scene, camera);
+        }
+
+        // Make functions global for onclick handlers
+        window.loadModel = loadModel;
+        window.optimizeModel = optimizeModel;
+        window.startAnimation = startAnimation;
+        window.stopAnimation = stopAnimation;
+
+        // Start the app
+        init();
+        animate();
+    </script>
+</body>
+</html>

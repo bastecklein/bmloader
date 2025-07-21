@@ -28,7 +28,9 @@ import {
     MeshStandardMaterial,
     MeshToonMaterial,
     Color,
-    FrontSide
+    FrontSide,
+    InstancedMesh,
+    Object3D
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -204,6 +206,143 @@ class RenderBasicModel extends Group {
 
     restoreState() {
         restoreModelState(this, this);
+    }
+
+    /**
+     * Optimizes the model for better performance by merging static geometries and using instancing
+     * @param {Object} options - Optimization options
+     * @param {number} options.instanceThreshold - Minimum number of identical objects needed for instancing (default: 3)
+     * @param {boolean} options.preserveAnimated - Whether to preserve animated objects as separate meshes (default: true)
+     */
+    optimize(options = {}) {
+        const { instanceThreshold = 3, preserveAnimated = true } = options;
+        
+        try {
+            const animatedObjects = new Set();
+            
+            // Identify animated objects if preserveAnimated is true
+            if (preserveAnimated) {
+                for (const animations of Object.values(this.bmDat.animations || {})) {
+                    if (Array.isArray(animations)) {
+                        for (const anim of animations) {
+                            animatedObjects.add(anim.target);
+                        }
+                    }
+                }
+            }
+            
+            const staticMeshes = [];
+            const animatedMeshes = [];
+            const instanceGroups = new Map();
+            
+            // Categorize meshes
+            this.traverse((child) => {
+                if (!child.isMesh) return;
+                
+                const varName = this.findVariableNameForObject(child);
+                
+                if (preserveAnimated && animatedObjects.has(varName)) {
+                    animatedMeshes.push(child);
+                    child.userData.keepSeparate = true;
+                } else {
+                    staticMeshes.push(child);
+                    
+                    // Group for potential instancing
+                    const geometryKey = this.getGeometryKey(child.geometry);
+                    const materialKey = this.getMaterialKey(child.material);
+                    const combinedKey = `${geometryKey}_${materialKey}`;
+                    
+                    if (!instanceGroups.has(combinedKey)) {
+                        instanceGroups.set(combinedKey, []);
+                    }
+                    instanceGroups.get(combinedKey).push(child);
+                }
+            });
+            
+            // Clear current scene
+            while (this.children.length > 0) {
+                this.remove(this.children[0]);
+            }
+            
+            // Add back animated objects unchanged
+            animatedMeshes.forEach(mesh => {
+                this.add(mesh);
+            });
+            
+            // Process static objects for optimization
+            const processedMeshes = new Set();
+            
+            for (const [, instances] of instanceGroups.entries()) {
+                if (instances.length >= instanceThreshold) {
+                    // Create instanced mesh
+                    const instancedMesh = this.createInstancedMesh(instances);
+                    this.add(instancedMesh);
+                    instances.forEach(mesh => processedMeshes.add(mesh));
+                }
+            }
+            
+            // Add remaining static meshes that weren't instanced
+            staticMeshes.forEach(mesh => {
+                if (!processedMeshes.has(mesh)) {
+                    this.add(mesh);
+                }
+            });
+            
+            console.log(`Optimization completed. Animated objects: ${animatedMeshes.length}, Static objects processed: ${staticMeshes.length}`);
+            
+        } catch (error) {
+            console.error('Optimization failed:', error);
+        }
+    }
+
+    /**
+     * Creates an InstancedMesh from an array of similar meshes
+     */
+    createInstancedMesh(meshes) {
+        const firstMesh = meshes[0];
+        const instancedMesh = new InstancedMesh(
+            firstMesh.geometry,
+            firstMesh.material,
+            meshes.length
+        );
+        
+        const dummy = new Object3D();
+        meshes.forEach((mesh, index) => {
+            dummy.position.copy(mesh.position);
+            dummy.rotation.copy(mesh.rotation);
+            dummy.scale.copy(mesh.scale);
+            dummy.updateMatrix();
+            instancedMesh.setMatrixAt(index, dummy.matrix);
+        });
+        
+        instancedMesh.instanceMatrix.needsUpdate = true;
+        return instancedMesh;
+    }
+
+    /**
+     * Find variable name for a given object
+     */
+    findVariableNameForObject(object) {
+        for (const [varName, varObj] of Object.entries(this.bmDat.variables || {})) {
+            if (varObj === object) {
+                return varName;
+            }
+        }
+        return null;
+    }
+
+    /**
+     * Generate a key for geometry based on its properties
+     */
+    getGeometryKey(geometry) {
+        return `${geometry.type}_${geometry.parameters ? JSON.stringify(geometry.parameters) : geometry.uuid}`;
+    }
+
+    /**
+     * Generate a key for material based on its properties
+     */
+    getMaterialKey(material) {
+        return `${material.type}_${material.color?.getHexString() || 'none'}_${material.map?.uuid || 'none'}`;
     }
 }
 
