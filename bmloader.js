@@ -1422,9 +1422,13 @@ function getModValue(val, renderModel, visited = new Set()) {
     const hasVars = _varRegex.test(val);
     
     if (!hasMath && !hasVars) {
-        // Simple literal value
+        // Simple literal value - only convert to number if it's a pure numeric string
+        // Preserve strings that might contain delimiters like "|", ",", ":", ";" for splitting
         const parsed = parseFloat(val);
-        return isNaN(parsed) ? val : parsed;
+        if (isNaN(parsed) || val.includes('|') || val.includes(',') || val.includes(';') || val.includes(':')) {
+            return val; // Keep as string for splitting operations
+        }
+        return parsed;
     }
 
     // Need to evaluate expression - check cache first
