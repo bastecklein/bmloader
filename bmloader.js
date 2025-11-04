@@ -209,6 +209,15 @@ class RenderBasicModel extends Group {
     }
 
     /**
+     * Clears performance caches when variables or animations change
+     * Call this after modifying variables or variable overrides
+     */
+    clearCaches() {
+        clearModValueCaches();
+        clearAnimationCaches(this);
+    }
+
+    /**
      * Optimizes the model for better performance by merging static geometries and using instancing
      * @param {Object} options - Optimization options
      * @param {number} options.instanceThreshold - Minimum number of identical objects needed for instancing (default: 3)
@@ -836,8 +845,17 @@ class RenderAnimation {
         this.speed = 0;
         this.steps = [];
         this.renTime = 0;
+        
+        // Performance optimization: cache for resolved values
+        this._cachedSpeed = undefined;
 
         parseAnimationInstructions(this);
+    }
+    
+    // Clear cached values when variables change
+    clearCache() {
+        this._cachedSpeed = undefined;
+        this._cachedSteps = undefined;
     }
 }
 
@@ -933,10 +951,26 @@ function doAnimate(model, inst, delta) {
     const ob = model.bmDat.variables[inst.target];
 
     if(ob) {
-        const rawSpeed = getModValue(inst.speed, model);
-        const speed = MathUtils.degToRad(parseFloat(rawSpeed)) * delta;
+        // Cache parsed speed value to avoid re-evaluation on every frame
+        if (inst._cachedSpeed === undefined) {
+            inst._cachedSpeed = getModValue(inst.speed, model);
+        }
+        const speed = MathUtils.degToRad(parseFloat(inst._cachedSpeed)) * delta;
+        
         const rawVal = inst.steps[inst.step];
-        const tgtVal = getModValue(rawVal, model);
+        
+        // Cache step values to avoid repeated evaluation of the same step
+        if (!inst._cachedSteps) {
+            inst._cachedSteps = {};
+        }
+        
+        let tgtVal;
+        if (inst._cachedSteps[inst.step] !== undefined) {
+            tgtVal = inst._cachedSteps[inst.step];
+        } else {
+            tgtVal = getModValue(rawVal, model);
+            inst._cachedSteps[inst.step] = tgtVal;
+        }
 
         let changeBaseOb = null;
         let subProp = null;
@@ -1308,23 +1342,54 @@ function createGroupOperation(code, renderModel, currentGroup, loader) {
     return group;
 }
 
+// Cache for parsed expressions to avoid re-parsing
+const _expressionCache = new Map();
+const _simpleVarRegex = /^(-?)\$(\w+)$/;
+const _mathRegex = /[+\-*/()]/;
+const _varRegex = /\$\w+/;
+
+/**
+ * Clears all performance caches. Call this when variables change significantly.
+ */
+function clearModValueCaches() {
+    _expressionCache.clear();
+}
+
+/**
+ * Clears animation caches for a specific model
+ */
+function clearAnimationCaches(renderModel) {
+    if (renderModel && renderModel.bmDat && renderModel.bmDat.animations) {
+        for (const animationSet of Object.values(renderModel.bmDat.animations)) {
+            if (Array.isArray(animationSet)) {
+                for (const animation of animationSet) {
+                    if (animation && typeof animation.clearCache === 'function') {
+                        animation.clearCache();
+                    }
+                }
+            }
+        }
+    }
+}
+
 /**
  * Returns the value of a variable or expression, resolving any variable references.
  * Supports simple math expressions and variable references in the form of $varName.
  * Handles circular references by returning 0 and logging a warning.
+ * Optimized for animation performance with caching and early returns.
  * @param {string|number} val The value or expression to evaluate.
  * @param {RenderBasicModel} renderModel The model containing variable definitions.
  * @param {Set} visited A set to track visited variable names to prevent circular references.
  * @return {number|string} The resolved value, which can be a number, string, or expression result.
  */
 function getModValue(val, renderModel, visited = new Set()) {
+    // Early return for non-strings
     if (typeof val !== 'string') return val;
 
-    const rawVars = {
-        ...(renderModel.bmDat.variables || {}),
-        ...(renderModel.bmDat.variableOverrides || {})
-    };
-
+    // Get merged variables once (avoid object spreading in hot path)
+    const variables = renderModel.bmDat.variables || {};
+    const overrides = renderModel.bmDat.variableOverrides || {};
+    
     function resolveVar(key) {
         if (visited.has(key)) {
             console.warn(`Circular reference detected for variable: ${key}`);
@@ -1333,40 +1398,69 @@ function getModValue(val, renderModel, visited = new Set()) {
 
         visited.add(key);
 
-        let value = rawVars[key];
+        // Check overrides first, then variables
+        let value = overrides[key];
+        if (typeof value === 'undefined') {
+            value = variables[key];
+        }
         if (typeof value === 'undefined') return 0;
 
         // Recurse and fully resolve the variable's value
         return getModValue(value, renderModel, visited);
     }
 
-    // $foo or -$foo (simple variable reference)
-    const varOnlyMatch = val.match(/^(-?)\$(\w+)$/);
+    // Fast path: simple variable reference ($foo or -$foo)
+    const varOnlyMatch = val.match(_simpleVarRegex);
     if (varOnlyMatch) {
         const [, neg, varName] = varOnlyMatch;
         const resolved = resolveVar(varName);
         return typeof resolved === 'number' && neg === '-' ? -resolved : resolved;
     }
 
-    // If not math-like, return literal or parsed float
-    const looksLikeMath = /[+\-*/()]/.test(val) || /\$\w+/.test(val);
-    if (!looksLikeMath) {
-        return isNaN(val) ? val : parseFloat(val);
+    // Fast path: check if it contains math or variables
+    const hasMath = _mathRegex.test(val);
+    const hasVars = _varRegex.test(val);
+    
+    if (!hasMath && !hasVars) {
+        // Simple literal value
+        const parsed = parseFloat(val);
+        return isNaN(parsed) ? val : parsed;
     }
 
-    // Replace $var with real variable names (expr-eval expects bare names)
-    const cleanExpr = val.replace(/\$(\w+)/g, (_, name) => name);
+    // Need to evaluate expression - check cache first
+    let expr = _expressionCache.get(val);
+    if (!expr) {
+        try {
+            // Replace $var with real variable names (expr-eval expects bare names)
+            const cleanExpr = val.replace(/\$(\w+)/g, (_, name) => name);
+            expr = parser.parse(cleanExpr);
+            
+            // Cache the parsed expression (limit cache size to prevent memory leaks)
+            if (_expressionCache.size >= 1000) {
+                _expressionCache.clear(); // Simple cache eviction
+            }
+            _expressionCache.set(val, expr);
+        } catch (e) {
+            console.warn(`Failed to parse expression: ${val}`, e);
+            return val;
+        }
+    }
 
     try {
-        const expr = parser.parse(cleanExpr);
-        const scope = new Proxy({}, {
-            get(_, name) {
-                return resolveVar(name);
+        // Create scope object for variable resolution
+        const scope = {};
+        
+        // Pre-populate scope with resolved variables to avoid proxy overhead
+        val.replace(/\$(\w+)/g, (_, name) => {
+            if (!(name in scope)) {
+                scope[name] = resolveVar(name);
             }
+            return name;
         });
+        
         return expr.evaluate(scope);
     } catch (e) {
-        console.warn(`Failed to evaluate: ${val}`, e);
+        console.warn(`Failed to evaluate expression: ${val}`, e);
         return val;
     }
 }
@@ -2270,6 +2364,10 @@ function restoreModelState(renderModel, ob) {
 // Reset the model to its original .bm state
 async function resetRenderModel(renderModel) {
     if (!renderModel || !renderModel.bmDat || !renderModel.bmDat._scriptLines) return;
+
+    // Clear performance caches
+    clearModValueCaches();
+    clearAnimationCaches(renderModel);
 
     // Clear scene
     while (renderModel.children.length > 0) {
