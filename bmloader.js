@@ -30,7 +30,8 @@ import {
     Color,
     FrontSide,
     InstancedMesh,
-    Object3D
+    Object3D,
+    PointLight
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
@@ -679,13 +680,30 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         }
 
         // Handle usegeo operation
-        if (mod.startsWith("usegeo($") && mod.endsWith(")")) {
-            const varName = mod.slice(8, -1);
+        if (mod.startsWith("usegeo(") && mod.endsWith(")")) {
+            let raw = mod.replace("usegeo(", "");
+            raw = raw.replace(")", "");
+            
+            const parts = raw.split(",");
+            const varName = parts[0].trim().replace("$", "");
             const sourceObj = renderModel.bmDat.variables[varName];
+            
             if (sourceObj && sourceObj.geometry) {
-                // Create new mesh with shared geometry, default material
-                const matClass = getMaterialClass(loader.defMaterial || "lambert");
-                const material = new matClass({ color: DEF_MODEL_COLOR });
+                // Get optional color (defaults to DEF_MODEL_COLOR)
+                let color = DEF_MODEL_COLOR;
+                if (parts.length > 1 && parts[1].trim()) {
+                    color = getModValue(parts[1].trim(), renderModel);
+                }
+                
+                // Get optional material type (defaults to loader's default)
+                let useMaterial = loader.defMaterial || "lambert";
+                if (parts.length > 2 && parts[2].trim()) {
+                    useMaterial = parts[2].trim();
+                }
+                
+                // Create new mesh with shared geometry and specified material
+                const matClass = getMaterialClass(useMaterial);
+                const material = new matClass({ color: color });
                 usingObj = new Mesh(sourceObj.geometry, material);
                 
                 // Add to scene or current group
@@ -718,7 +736,8 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
             { keyword: "plane(", func: createPlaneOperation },
             { keyword: "empty()", func: createGroupOperation },
             { keyword: "decal(", func: createDecalOperation },
-            { keyword: "lathe(", func: createLatheOperation }
+            { keyword: "lathe(", func: createLatheOperation },
+            { keyword: "pointlight(", func: createPointLightOperation }
         ];
 
         let handled = false;
@@ -756,6 +775,20 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         if (mod.startsWith("material(")) {
             (usingVar ? doMaterialOperation(usingVar, mod, renderModel)
                 : usingObj && doMaterialOperation(usingObj, mod, renderModel));
+            continue;
+        }
+
+        // Handle lightmap operation
+        if (mod.startsWith("lightmap(")) {
+            (usingVar ? await doLightmapOperation(usingVar, mod, renderModel)
+                : usingObj && await doLightmapOperation(usingObj, mod, renderModel));
+            continue;
+        }
+
+        // Handle bumpmap operation
+        if (mod.startsWith("bumpmap(")) {
+            (usingVar ? await doBumpmapOperation(usingVar, mod, renderModel)
+                : usingObj && await doBumpmapOperation(usingObj, mod, renderModel));
             continue;
         }
 
@@ -2202,6 +2235,45 @@ function getMaterialClass(matname) {
     return MeshBasicMaterial;
 }
 
+// eslint-disable-next-line no-unused-vars
+function createPointLightOperation(code, renderModel, currentGroup, loader) {
+    let raw = code.replace("pointlight(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let color = "#ffffff";
+    let intensity = 1;
+    let distance = 0;
+    let decay = 2;
+
+    if(parts.length >= 1 && parts[0].trim()) {
+        color = getModValue(parts[0], renderModel);
+    }
+
+    if(parts.length >= 2 && parts[1].trim()) {
+        intensity = getModValue(parts[1], renderModel);
+    }
+
+    if(parts.length >= 3 && parts[2].trim()) {
+        distance = getModValue(parts[2], renderModel);
+    }
+
+    if(parts.length >= 4 && parts[3].trim()) {
+        decay = getModValue(parts[3], renderModel);
+    }
+
+    const light = new PointLight(color, intensity, distance, decay);
+
+    if(currentGroup) {
+        currentGroup.add(light);
+    } else {
+        renderModel.add(light);
+    }
+
+    return light;
+}
+
 async function createLatheOperation(code, renderModel, currentGroup, loader) {
     let raw = code.replace("lathe(","");
     raw = raw.replace(")","");
@@ -2336,6 +2408,62 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     }
 
     return mesh;
+}
+
+async function doLightmapOperation(id, code, renderModel) {
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid || !obid.material) {
+        console.warn("Invalid object for lightmap operation:", id);
+        return;
+    }
+
+    let raw = code.replace("lightmap(","");
+    raw = raw.replace(")","");
+
+    const textureRef = raw.trim();
+    
+    if(textureRef && textureRef.indexOf("$") == 0) {
+        const texture = await loadTexture(textureRef, renderModel);
+        if(texture) {
+            obid.material.lightMap = texture;
+            obid.material.needsUpdate = true;
+        } else {
+            console.warn("Lightmap texture not found:", textureRef);
+        }
+    }
+}
+
+async function doBumpmapOperation(id, code, renderModel) {
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid || !obid.material) {
+        console.warn("Invalid object for bumpmap operation:", id);
+        return;
+    }
+
+    let raw = code.replace("bumpmap(","");
+    raw = raw.replace(")","");
+
+    const textureRef = raw.trim();
+    
+    if(textureRef && textureRef.indexOf("$") == 0) {
+        const texture = await loadTexture(textureRef, renderModel);
+        if(texture) {
+            obid.material.bumpMap = texture;
+            obid.material.needsUpdate = true;
+        } else {
+            console.warn("Bumpmap texture not found:", textureRef);
+        }
+    }
 }
 
 async function doMaterialOperation(id, code, renderModel) {
