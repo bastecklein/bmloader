@@ -76,9 +76,14 @@ class BMLoader extends Loader {
                 
                 // Check if we have a cached render model to clone
                 if(loadedRenderModels[cacheKey]) {
-                    const clone = loadedRenderModels[cacheKey].clone(url.variables);
-                    onLoad(clone);
-                    return;
+                    const clone = loadedRenderModels[cacheKey].clone();
+                    if (clone) {
+                        onLoad(clone);
+                        return;
+                    } else {
+                        // Cache was corrupted, remove it and rebuild
+                        delete loadedRenderModels[cacheKey];
+                    }
                 }
 
                 loadBM(modelDat, null, scope).then(function(renderModel) {
@@ -101,8 +106,13 @@ class BMLoader extends Loader {
                 // Check if we have a cached render model to clone
                 if(loadedRenderModels[cacheKey]) {
                     const clone = loadedRenderModels[cacheKey].clone(url.variables);
-                    onLoad(clone);
-                    return;
+                    if (clone) {
+                        onLoad(clone);
+                        return;
+                    } else {
+                        // Cache was corrupted, remove it and rebuild
+                        delete loadedRenderModels[cacheKey];
+                    }
                 }
 
                 loadBM(modelDat, url, scope).then(function(renderModel) {
@@ -2056,10 +2066,16 @@ async function resetRenderModel(renderModel) {
  * @return {RenderBasicModel} A new model instance sharing geometries and materials
  */
 function cloneRenderModel(sourceModel, variableOverrides = null) {
+    // Safety check - ensure source model is valid
+    if (!sourceModel || !sourceModel.bmDat || !sourceModel.bmDat.src) {
+        console.error("cloneRenderModel: Invalid source model", sourceModel);
+        return null;
+    }
+    
     const clone = new RenderBasicModel(sourceModel.bmDat.src, sourceModel.bmDat.loaderRef);
     
-    // Copy model data properties
-    clone.bmDat.variables = { ...sourceModel.bmDat.variables };
+    // Copy model data properties (but not variables yet - we'll rebuild those)
+    clone.bmDat.variables = {}; // Will be populated during cloning
     clone.bmDat.geoTranslate = { ...sourceModel.bmDat.geoTranslate };
     clone.bmDat._scriptLines = sourceModel.bmDat._scriptLines ? [...sourceModel.bmDat._scriptLines] : null;
     
@@ -2137,6 +2153,17 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
     }
     
     cloneObject3D(sourceModel, clone);
+    
+    // Copy any non-object variables (primitive values, strings, numbers)
+    for (let varName in sourceModel.bmDat.variables) {
+        const value = sourceModel.bmDat.variables[varName];
+        // Only copy if it's not already set (not a cloned object) and it's a primitive
+        if (!clone.bmDat.variables[varName]) {
+            if (typeof value !== 'object' || value === null) {
+                clone.bmDat.variables[varName] = value;
+            }
+        }
+    }
     
     // Save default state for animations
     clone.saveState();
