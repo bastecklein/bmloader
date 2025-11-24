@@ -39,6 +39,8 @@ import { Parser } from "expr-eval";
 
 const storedGeometries = {};
 const storedImageCanvases = {};
+const storedMaterials = {};
+const loadedRenderModels = {}; // Cache for fully-loaded render models
 
 const DEF_MODEL_COLOR = "#999999";
 const FULLTURN = MathUtils.degToRad(360);
@@ -67,8 +69,22 @@ class BMLoader extends Loader {
 
             if(url.script && url.id) {
                 modelDat = rebuildBM(url);
+                
+                // Use model ID and revision as cache key for object-based loads
+                const cacheKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
+                
+                // Check if we have a cached render model to clone
+                if(loadedRenderModels[cacheKey]) {
+                    const clone = loadedRenderModels[cacheKey].clone();
+                    onLoad(clone);
+                    return;
+                }
 
                 loadBM(modelDat, null, scope).then(function(renderModel) {
+                    // Cache the first fully-loaded model for future cloning
+                    if(!loadedRenderModels[cacheKey]) {
+                        loadedRenderModels[cacheKey] = renderModel;
+                    }
                     onLoad(renderModel);
                 });
 
@@ -77,8 +93,22 @@ class BMLoader extends Loader {
 
             if(url.json && url.json.script && url.json.id) {
                 modelDat = rebuildBM(url.json);
+                
+                // Use model ID and revision as cache key for object-based loads
+                const cacheKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
+                
+                // Check if we have a cached render model to clone
+                if(loadedRenderModels[cacheKey]) {
+                    const clone = loadedRenderModels[cacheKey].clone(url.variables);
+                    onLoad(clone);
+                    return;
+                }
 
                 loadBM(modelDat, url, scope).then(function(renderModel) {
+                    // Cache the first fully-loaded model for future cloning
+                    if(!loadedRenderModels[cacheKey]) {
+                        loadedRenderModels[cacheKey] = renderModel;
+                    }
                     onLoad(renderModel);
                 });
 
@@ -96,7 +126,18 @@ class BMLoader extends Loader {
         }
 
         if(remoteModels[url]) {
+            // Check if we have a fully-loaded render model to clone
+            if(loadedRenderModels[url]) {
+                const clone = loadedRenderModels[url].clone(options?.variables);
+                onLoad(clone);
+                return;
+            }
+            
             loadBM(remoteModels[url], options, scope).then(function(renderModel) {
+                // Cache the first fully-loaded model for future cloning
+                if(!loadedRenderModels[url]) {
+                    loadedRenderModels[url] = renderModel;
+                }
                 onLoad(renderModel);
             });
 
@@ -112,6 +153,10 @@ class BMLoader extends Loader {
             remoteModels[url] = modelDat;
 
             loadBM(modelDat, options, scope).then(function(renderModel) {
+                // Cache the first fully-loaded model for future cloning
+                if(!loadedRenderModels[url]) {
+                    loadedRenderModels[url] = renderModel;
+                }
                 onLoad(renderModel);
             });
 
@@ -215,6 +260,16 @@ class RenderBasicModel extends Group {
     clearCaches() {
         clearModValueCaches();
         clearAnimationCaches(this);
+    }
+
+    /**
+     * Creates a clone of this model with shared geometries and materials.
+     * This is much faster than re-parsing the model script.
+     * @param {Object} variableOverrides - Optional variable overrides for the clone
+     * @return {RenderBasicModel} A new instance sharing geometries and materials
+     */
+    clone(variableOverrides = null) {
+        return cloneRenderModel(this, variableOverrides);
     }
 
 }
@@ -1468,9 +1523,24 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
     const txInst = textureInstruction.split("|");
 
     if(txInst.length == 1) {
+        const texture = await loadTexture(txInst[0], renderModel);
+        
+        // Generate cache key for material
+        const matKey = generateMaterialKey({
+            textureHash: texture ? hash(txInst[0]) : null,
+            transparent: transparent,
+            depthWrite: depthWrite,
+            color: withColor,
+            materialType: useMaterial
+        });
+
+        // Check if material already exists in cache
+        if(storedMaterials[matKey]) {
+            return storedMaterials[matKey];
+        }
 
         let mapOptions = {
-            map: await loadTexture(txInst[0], renderModel),
+            map: texture,
             transparent: transparent,
             depthWrite: depthWrite
         };
@@ -1480,15 +1550,37 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
         }
 
         const matClass = getMaterialClass(useMaterial);
+        const material = new matClass(mapOptions);
+        
+        // Cache the material
+        storedMaterials[matKey] = material;
 
-        return new matClass(mapOptions);
+        return material;
     }
 
     let mapping = [];
 
     for(let i = 0; i < txInst.length; i++) {
+        const texture = await loadTexture(txInst[i], renderModel);
+        
+        // Generate cache key for each material in array
+        const matKey = generateMaterialKey({
+            textureHash: texture ? hash(txInst[i]) : null,
+            transparent: transparent,
+            depthWrite: depthWrite,
+            color: withColor,
+            materialType: useMaterial,
+            side: DoubleSide
+        });
+
+        // Check if material already exists in cache
+        if(storedMaterials[matKey]) {
+            mapping.push(storedMaterials[matKey]);
+            continue;
+        }
+
         let mapOptions = {
-            map: await loadTexture(txInst[i],renderModel),
+            map: texture,
             side: DoubleSide,
             transparent: transparent,
             depthWrite: depthWrite
@@ -1499,8 +1591,12 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
         }
 
         const matClass = getMaterialClass(useMaterial);
-
-        mapping.push(new matClass(mapOptions));
+        const material = new matClass(mapOptions);
+        
+        // Cache the material
+        storedMaterials[matKey] = material;
+        
+        mapping.push(material);
     }
     
     if(mapping.length == 0) {
@@ -1552,6 +1648,23 @@ async function loadTexture(txInst, renderModel) {
     tx.colorSpace = SRGBColorSpace;
 
     return tx;
+}
+
+/**
+ * Generates a unique cache key for a material based on its properties.
+ * @param {Object} options - Material properties to generate key from
+ * @return {string} - A unique key string for caching
+ */
+function generateMaterialKey(options) {
+    const parts = [
+        options.materialType || 'lambert',
+        options.textureHash || 'notex',
+        options.color || 'nocol',
+        options.transparent ? 't' : 'f',
+        options.depthWrite ? 'd' : 'n',
+        options.side === DoubleSide ? 'double' : (options.side === undefined ? 'front' : 'other')
+    ];
+    return parts.join('_');
 }
 
 /**
@@ -1779,6 +1892,102 @@ async function resetRenderModel(renderModel) {
     }
 }
 
+/**
+ * Clones a RenderBasicModel by recursively cloning its three.js hierarchy.
+ * Shares geometries and materials for optimal performance.
+ * @param {RenderBasicModel} sourceModel - The model to clone
+ * @param {Object} variableOverrides - Optional variable overrides for the clone
+ * @return {RenderBasicModel} A new model instance sharing geometries and materials
+ */
+function cloneRenderModel(sourceModel, variableOverrides = null) {
+    const clone = new RenderBasicModel(sourceModel.bmDat.src, sourceModel.bmDat.loaderRef);
+    
+    // Copy model data properties
+    clone.bmDat.variables = { ...sourceModel.bmDat.variables };
+    clone.bmDat.geoTranslate = { ...sourceModel.bmDat.geoTranslate };
+    clone.bmDat._scriptLines = sourceModel.bmDat._scriptLines ? [...sourceModel.bmDat._scriptLines] : null;
+    
+    // Apply variable overrides if provided
+    if (variableOverrides) {
+        for (let varName in variableOverrides) {
+            clone.bmDat.variableOverrides[varName] = variableOverrides[varName];
+        }
+    } else {
+        clone.bmDat.variableOverrides = { ...sourceModel.bmDat.variableOverrides };
+    }
+    
+    // Deep clone animations
+    clone.bmDat.animations = {};
+    for (let aniName in sourceModel.bmDat.animations) {
+        const sourceAni = sourceModel.bmDat.animations[aniName];
+        if (Array.isArray(sourceAni)) {
+            clone.bmDat.animations[aniName] = sourceAni.map(inst => {
+                const clonedInst = new RenderAnimation(inst.src);
+                clonedInst.target = inst.target;
+                clonedInst.action = inst.action;
+                clonedInst.speed = inst.speed;
+                clonedInst.steps = [...inst.steps];
+                return clonedInst;
+            });
+        }
+    }
+    
+    // Clone the three.js hierarchy (meshes, groups, etc.)
+    // This shares geometries and materials but creates new mesh instances
+    function cloneObject3D(source, parent) {
+        source.children.forEach(child => {
+            let clonedChild;
+            
+            if (child instanceof Mesh) {
+                // Create new mesh with SHARED geometry and material
+                clonedChild = new Mesh(child.geometry, child.material);
+                clonedChild.position.copy(child.position);
+                clonedChild.rotation.copy(child.rotation);
+                clonedChild.scale.copy(child.scale);
+                
+                // Copy custom properties
+                if (child.name) clonedChild.name = child.name;
+                if (child.visible !== undefined) clonedChild.visible = child.visible;
+                if (child.castShadow !== undefined) clonedChild.castShadow = child.castShadow;
+                if (child.receiveShadow !== undefined) clonedChild.receiveShadow = child.receiveShadow;
+                
+            } else if (child instanceof Group) {
+                // Create new group
+                clonedChild = new Group();
+                clonedChild.position.copy(child.position);
+                clonedChild.rotation.copy(child.rotation);
+                clonedChild.scale.copy(child.scale);
+                
+                if (child.name) clonedChild.name = child.name;
+            } else {
+                // For other object types, use three.js clone
+                clonedChild = child.clone();
+            }
+            
+            parent.add(clonedChild);
+            
+            // Update variable references if this object was stored
+            for (let varName in sourceModel.bmDat.variables) {
+                if (sourceModel.bmDat.variables[varName] === child) {
+                    clone.bmDat.variables[varName] = clonedChild;
+                }
+            }
+            
+            // Recursively clone children
+            if (child.children && child.children.length > 0) {
+                cloneObject3D(child, clonedChild);
+            }
+        });
+    }
+    
+    cloneObject3D(sourceModel, clone);
+    
+    // Save default state for animations
+    clone.saveState();
+    
+    return clone;
+}
+
 function addDecalToObject(obj, material, position = { x: 0, y: 0, z: 0 }, orientation = { x: 0, y: 0, z: 0 }, scale = { x: 1, y: 1, z: 1 }) {
     if (!obj || !material) return;
 
@@ -1900,7 +2109,7 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     if(txPart && txPart.indexOf("$") == 0) {
         let transparent = false;
 
-        if(colPart == "transparent" || (colPart.length == 7 && colPart[0] == "#")) {
+        if(colPart == "transparent" || (colPart && colPart.length == 7 && colPart[0] == "#")) {
             transparent = true;
         }
 
@@ -1908,19 +2117,30 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     }
         
     if(!material) {
-
         const matClass = getMaterialClass(useMaterial);
+        const color = (colPart && colPart.length == 7 && colPart[0] == "#") ? colPart : DEF_MODEL_COLOR;
+        
+        // Generate cache key for color-only materials
+        const matKey = generateMaterialKey({
+            textureHash: null,
+            transparent: false,
+            depthWrite: depthWrite,
+            color: color,
+            materialType: useMaterial,
+            side: side
+        });
 
-        if(colPart && colPart.length == 7 && colPart[0] == "#") {
-            material = new matClass({
-                color: colPart,
-                side: side
-            });
+        // Check if material already exists in cache
+        if(storedMaterials[matKey]) {
+            material = storedMaterials[matKey];
         } else {
             material = new matClass({
-                color: DEF_MODEL_COLOR,
+                color: color,
                 side: side
             });
+            
+            // Cache the material
+            storedMaterials[matKey] = material;
         }
     }
 
