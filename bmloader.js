@@ -34,6 +34,7 @@ import {
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
+import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 import { Parser } from "expr-eval";
 
@@ -119,7 +120,6 @@ class BMLoader extends Loader {
                 options = url;
                 url = options.url;
             } else {
-                console.log(options);
                 onError(new Error("Invalid model data"));
                 return;
             }
@@ -521,7 +521,9 @@ async function loadBM(modelData, options, loader) {
     }
 
     const currentGroup = {
-        grp: null
+        grp: null,
+        merging: false,
+        mergeList: []
     };
 
     let code = modelData.script.trim();
@@ -631,6 +633,54 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
             continue;
         }
 
+        // Handle geometry merging
+        if (mod === "startmerge()") {
+            currentGroup.merging = true;
+            currentGroup.mergeList = [];
+            currentGroup.mergeName = usingVar;
+            currentGroup.grp = {
+                add: function() {}
+            };
+            continue;
+        }
+
+        if (mod === "endmerge()") {
+            if (currentGroup.merging && currentGroup.mergeList.length > 0) {
+                usingObj = createMergedGeometry(currentGroup.mergeList);
+
+                usingVar = currentGroup.mergeName;
+
+                if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
+            }
+            currentGroup.merging = false;
+            currentGroup.mergeList = [];
+            currentGroup.grp = null;
+            continue;
+        }
+
+        // Handle usegeo operation
+        if (mod.startsWith("usegeo($") && mod.endsWith(")")) {
+            const varName = mod.slice(8, -1);
+            const sourceObj = renderModel.bmDat.variables[varName];
+            if (sourceObj && sourceObj.geometry) {
+                // Create new mesh with shared geometry, default material
+                const matClass = getMaterialClass(loader.defMaterial || "lambert");
+                const material = new matClass({ color: DEF_MODEL_COLOR });
+                usingObj = new Mesh(sourceObj.geometry, material);
+                
+                if (currentGroup.grp) {
+                    currentGroup.grp.add(usingObj);
+                } else {
+                    renderModel.add(usingObj);
+                }
+                
+                if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
+            } else {
+                console.warn("usegeo: Invalid or missing geometry reference:", varName);
+            }
+            continue;
+        }
+
         // Geometry and transform operations
         const ops = [
             { keyword: "sphere(", func: createSphereOperation },
@@ -647,10 +697,18 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         ];
 
         let handled = false;
+
         for (const op of ops) {
             if (mod.startsWith(op.keyword)) {
                 usingObj = await op.func(mod, renderModel, currentGroup.grp, loader);
-                if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
+                
+                // If we're in merge mode, collect geometries instead of adding to scene
+                if (currentGroup.merging && usingObj && usingObj.geometry) {
+                    currentGroup.mergeList.push(usingObj);
+                } else if (usingVar) {
+                    renderModel.bmDat.variables[usingVar] = usingObj;
+                }
+                
                 handled = true;
                 break;
             }
@@ -780,6 +838,89 @@ function createGroupOperation(code, renderModel, currentGroup, loader) {
     }
 
     return group;
+}
+
+/**
+ * Creates a merged geometry from a list of meshes
+ * @param {Array<Mesh>} meshList - Array of meshes to merge
+ * @return {Mesh} A single mesh with merged geometry
+ */
+function createMergedGeometry(meshList) {
+    if (!meshList || meshList.length === 0) {
+        console.warn("createMergedGeometry: Empty mesh list");
+        return null;
+    }
+
+    // Generate cache key based on geometry properties and transforms
+    // This enables caching across different model instances
+    const hashParts = meshList.map(m => {
+        if (!m || !m.geometry) return '';
+        
+        // Find the storedGeometries key for this geometry
+        let geoKey = null;
+        for (const [key, geo] of Object.entries(storedGeometries)) {
+            if (geo === m.geometry) {
+                geoKey = key;
+                break;
+            }
+        }
+        
+        // If not found in cache, use geometry type and basic params
+        if (!geoKey) {
+            geoKey = `${m.geometry.type}_${m.geometry.uuid}`;
+        }
+        
+        // Include transform data in hash
+        const pos = m.position;
+        const rot = m.rotation;
+        const scl = m.scale;
+        const transform = `p${pos.x.toFixed(3)},${pos.y.toFixed(3)},${pos.z.toFixed(3)}_r${rot.x.toFixed(3)},${rot.y.toFixed(3)},${rot.z.toFixed(3)}_s${scl.x.toFixed(3)},${scl.y.toFixed(3)},${scl.z.toFixed(3)}`;
+        
+        return `${geoKey}@${transform}`;
+    }).join('|');
+    
+    const geoHash = `merged_${hash(hashParts)}`;
+    
+    // Check if this exact merge already exists
+    if (storedGeometries[geoHash]) {
+        const defaultMaterial = new MeshLambertMaterial({ color: DEF_MODEL_COLOR });
+        return new Mesh(storedGeometries[geoHash], defaultMaterial);
+    }
+
+    // Extract geometries and apply transforms
+    const geometriesToMerge = [];
+    
+    for (const mesh of meshList) {
+        if (mesh && mesh.geometry) {
+            // Clone geometry to preserve original
+            const geo = mesh.geometry.clone();
+            
+            // Update the mesh's matrix to include position, rotation, scale
+            mesh.updateMatrix();
+            
+            // Apply mesh's transform matrix to the geometry vertices
+            geo.applyMatrix4(mesh.matrix);
+            
+            geometriesToMerge.push(geo);
+        }
+    }
+
+    if (geometriesToMerge.length === 0) {
+        console.warn("createMergedGeometry: No valid geometries to merge");
+        return null;
+    }
+
+    // Merge all geometries into one
+    const mergedGeometry = mergeGeometries(geometriesToMerge, false);
+    
+    // Cache the merged geometry
+    storedGeometries[geoHash] = mergedGeometry;
+    
+    // Create mesh with default material (user can override with material() operation)
+    const defaultMaterial = new MeshLambertMaterial({ color: DEF_MODEL_COLOR });
+    const mergedMesh = new Mesh(mergedGeometry, defaultMaterial);
+    
+    return mergedMesh;
 }
 
 // Cache for parsed expressions to avoid re-parsing
@@ -1758,7 +1899,7 @@ async function getImageFromStoredCanvas(txDef, imgURL, frame, rawImgDat, renderM
 
             image.src = imgURL;
         },function(){
-            console.log("fail");
+            console.warn("fail");
         });
 
     }
