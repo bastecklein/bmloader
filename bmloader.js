@@ -523,7 +523,8 @@ async function loadBM(modelData, options, loader) {
     const currentGroup = {
         grp: null,
         merging: false,
-        mergeList: []
+        mergeList: [],
+        mergeName: null
     };
 
     let code = modelData.script.trim();
@@ -637,7 +638,8 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         if (mod === "startmerge()") {
             currentGroup.merging = true;
             currentGroup.mergeList = [];
-            currentGroup.mergeName = usingVar;
+            currentGroup.mergeName = usingVar; // Save the variable name from this line
+            // Create a dummy group that doesn't actually add to scene
             currentGroup.grp = {
                 add: function() {}
             };
@@ -646,14 +648,22 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
 
         if (mod === "endmerge()") {
             if (currentGroup.merging && currentGroup.mergeList.length > 0) {
-                usingObj = createMergedGeometry(currentGroup.mergeList);
-
-                usingVar = currentGroup.mergeName;
-
-                if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
+                const mergedObj = createMergedGeometry(currentGroup.mergeList);
+                
+                // Assign to the variable from startmerge() line
+                if (currentGroup.mergeName) {
+                    renderModel.bmDat.variables[currentGroup.mergeName] = mergedObj;
+                }
+                
+                // Also set as usingObj if this line has a variable assignment
+                if (usingVar) {
+                    renderModel.bmDat.variables[usingVar] = mergedObj;
+                    usingObj = mergedObj;
+                }
             }
             currentGroup.merging = false;
             currentGroup.mergeList = [];
+            currentGroup.mergeName = null;
             currentGroup.grp = null;
             continue;
         }
@@ -668,12 +678,17 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
                 const material = new matClass({ color: DEF_MODEL_COLOR });
                 usingObj = new Mesh(sourceObj.geometry, material);
                 
-                if (currentGroup.grp) {
+                // Add to scene or current group
+                if (currentGroup.merging) {
+                    // Inside merge block - just track it
+                    currentGroup.mergeList.push(usingObj);
+                } else if (currentGroup.grp) {
                     currentGroup.grp.add(usingObj);
                 } else {
                     renderModel.add(usingObj);
                 }
                 
+                // Store in variable if specified
                 if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
             } else {
                 console.warn("usegeo: Invalid or missing geometry reference:", varName);
