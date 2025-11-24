@@ -76,7 +76,7 @@ class BMLoader extends Loader {
                 
                 // Check if we have a cached render model to clone
                 if(loadedRenderModels[cacheKey]) {
-                    const clone = loadedRenderModels[cacheKey].clone();
+                    const clone = loadedRenderModels[cacheKey].clone(url.variables);
                     onLoad(clone);
                     return;
                 }
