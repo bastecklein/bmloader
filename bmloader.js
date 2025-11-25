@@ -2264,6 +2264,7 @@ function createPointLightOperation(code, renderModel, currentGroup, loader) {
     }
 
     const light = new PointLight(color, intensity, distance, decay);
+    light.castShadow = false;
 
     if(currentGroup) {
         currentGroup.add(light);
