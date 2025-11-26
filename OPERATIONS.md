@@ -310,11 +310,12 @@ $glowing > box(1, 1, 1) > material(#222222, 0, 0, 0, 0, 0, #ff6600, 3)
 
 ---
 
-### lightmap($texture)
+### lightmap($texture, 1.0)
 Applies a light map texture to an object (baked lighting).
 
 **Parameters:**
 - `$texture` - Texture reference
+- Intensity
 
 **Example:**
 ```javascript
@@ -323,11 +324,12 @@ $room > box(10, 10, 10) > lightmap($roomLightmap)
 
 ---
 
-### bumpmap($texture)
+### bumpmap($texture, 1.0)
 Applies a bump map texture to an object (surface detail).
 
 **Parameters:**
 - `$texture` - Texture reference
+- Intensity
 
 **Example:**
 ```javascript

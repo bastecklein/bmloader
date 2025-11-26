@@ -2642,7 +2642,8 @@ function createFakeLightOperation(code, renderModel, currentGroup, loader) {
     mesh.userData.billboard = true;
     mesh.castShadow = false;
     mesh.receiveShadow = false;
-    
+    mesh.scale.set(size, size, size);
+
     if(currentGroup) {
         currentGroup.add(mesh);
     } else {
