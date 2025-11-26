@@ -1404,7 +1404,7 @@ async function createTextOperation(code, renderModel, currentGroup, loader) {
             geometry = new TextGeometry(text, {
                 font: font,
                 size: parseFloat(size),
-                height: parseFloat(height),
+                depth: parseFloat(height),
                 curveSegments: 12,
                 bevelEnabled: bevelSize > 0 && bevelThickness > 0,
                 bevelThickness: parseFloat(bevelThickness),
