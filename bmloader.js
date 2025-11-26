@@ -31,10 +31,15 @@ import {
     FrontSide,
     InstancedMesh,
     Object3D,
-    PointLight
+    PointLight,
+    Texture,
+    AdditiveBlending,
+    RingGeometry
 } from "three";
 
 import { DecalGeometry } from "three/addons/geometries/DecalGeometry.js";
+import { TextGeometry } from "three/addons/geometries/TextGeometry.js";
+import { FontLoader } from "three/addons/loaders/FontLoader.js";
 import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 
 import { Parser } from "expr-eval";
@@ -43,6 +48,7 @@ const storedGeometries = {};
 const storedImageCanvases = {};
 const storedMaterials = {};
 const loadedRenderModels = {}; // Cache for fully-loaded render models
+const loadedFonts = {}; // Cache for loaded fonts
 
 const DEF_MODEL_COLOR = "#999999";
 const FULLTURN = MathUtils.degToRad(360);
@@ -59,6 +65,7 @@ class BMLoader extends Loader {
 
         this.defMaterial = options.defMaterial || "lambert";
         this.imgQuality = options.imgQuality || 0.85;
+        this.enableLights = options.enableLights !== false; // Set to false to disable all lights for performance
     }
 
     load(url, onLoad, onProgress, onError) {
@@ -475,6 +482,97 @@ function doAnimate(model, inst, delta) {
             target = parseFloat(tgtVal);
         }
 
+        // Handle material property animations (emissiveIntensity, opacity, etc.)
+        if(inst.action.indexOf("emissiveIntensity") == 0) {
+            if(!ob.material) return;
+            
+            target = parseFloat(tgtVal);
+            if(isNaN(target)) {
+                console.warn("Invalid emissiveIntensity target value:", tgtVal);
+                return;
+            }
+
+            const cur = ob.material.emissiveIntensity || 0;
+            
+            if(Math.abs(cur - target) < 0.01) {
+                ob.material.emissiveIntensity = target;
+                ob.material.needsUpdate = true;
+                inst.step++;
+                if(inst.step >= inst.steps.length) {
+                    inst.step = 0;
+                }
+                return;
+            }
+
+            if(cur > target) {
+                ob.material.emissiveIntensity = Math.max(target, cur - speed * 10);
+            } else {
+                ob.material.emissiveIntensity = Math.min(target, cur + speed * 10);
+            }
+            
+            ob.material.needsUpdate = true;
+            return;
+        }
+
+        if(inst.action.indexOf("opacity") == 0) {
+            if(!ob.material) return;
+            
+            target = parseFloat(tgtVal);
+            if(isNaN(target)) {
+                console.warn("Invalid opacity target value:", tgtVal);
+                return;
+            }
+
+            const cur = ob.material.opacity || 1;
+            
+            if(Math.abs(cur - target) < 0.01) {
+                ob.material.opacity = target;
+                ob.material.transparent = target < 1;
+                ob.material.needsUpdate = true;
+                inst.step++;
+                if(inst.step >= inst.steps.length) {
+                    inst.step = 0;
+                }
+                return;
+            }
+
+            if(cur > target) {
+                ob.material.opacity = Math.max(target, cur - speed * 10);
+            } else {
+                ob.material.opacity = Math.min(target, cur + speed * 10);
+            }
+            
+            ob.material.transparent = ob.material.opacity < 1;
+            ob.material.needsUpdate = true;
+            return;
+        }
+
+        if(inst.action.indexOf("visible") == 0) {
+            // Visibility is instant toggle - no smooth transition
+            inst.renTime += delta;
+
+            if(inst.renTime >= inst.speed) {
+                inst.renTime = 0;
+
+                // Support 0/1, true/false values
+                let visible = true;
+                if(tgtVal === 0 || tgtVal === "0" || tgtVal === false || tgtVal === "false") {
+                    visible = false;
+                } else if(tgtVal === 1 || tgtVal === "1" || tgtVal === true || tgtVal === "true") {
+                    visible = true;
+                }
+
+                ob.visible = visible;
+
+                inst.step++;
+                if(inst.step >= inst.steps.length) {
+                    inst.step = 0;
+                }
+            }
+
+            return;
+        }
+
         const cur = ob[changeBaseOb][subProp];
 
         if(cur > target) {
@@ -734,10 +832,13 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
             { keyword: "capsule(", func: createCapsuleOperation },
             { keyword: "shape(", func: createShapeOperation },
             { keyword: "plane(", func: createPlaneOperation },
+            { keyword: "ring(", func: createRingOperation },
+            { keyword: "text(", func: createTextOperation },
             { keyword: "empty()", func: createGroupOperation },
             { keyword: "decal(", func: createDecalOperation },
             { keyword: "lathe(", func: createLatheOperation },
-            { keyword: "pointlight(", func: createPointLightOperation }
+            { keyword: "pointlight(", func: createPointLightOperation },
+            { keyword: "fakelight(", func: createFakeLightOperation }
         ];
 
         let handled = false;
@@ -826,6 +927,11 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         if (mod.startsWith("opacity(")) {
             (usingVar ? doOpacityOperation(usingVar, mod, renderModel)
                 : usingObj && doOpacityOperation(usingObj, mod, renderModel));
+            continue;
+        }
+        if (mod.startsWith("visible(")) {
+            (usingVar ? doVisibleOperation(usingVar, mod, renderModel)
+                : usingObj && doVisibleOperation(usingObj, mod, renderModel));
             continue;
         }
         if (mod.startsWith("orientation(")) {
@@ -1195,6 +1301,117 @@ async function createPlaneOperation(code, renderModel, currentGroup, loader) {
         }
 
         return await setupNewMaterial(renderModel, geometry, currentGroup, parts[2] || null, parts[3] || null, useMaterial, depthWrite, side);
+    }
+
+    return null;
+}
+
+async function createRingOperation(code, renderModel, currentGroup, loader) {
+    let raw = code.replace("ring(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let useMaterial = loader.defMaterial || "lambert";
+
+    if(parts.length >= 2) {
+
+        const innerRadius = getModValue(parts[0], renderModel);
+        const outerRadius = getModValue(parts[1], renderModel);
+        const thetaSegments = parts.length >= 3 ? getModValue(parts[2], renderModel) : 32;
+
+        let geoName = "ring." + innerRadius + "." + outerRadius + "." + thetaSegments + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+
+        let geometry = null;
+
+        if(storedGeometries[geoName]) {
+            geometry = storedGeometries[geoName];
+        } else {
+            geometry = new RingGeometry(innerRadius, outerRadius, thetaSegments);
+
+            geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
+
+            storedGeometries[geoName] = geometry;
+        }
+
+        if(parts.length > 5) {
+            useMaterial = parts[5].trim();
+        }
+
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[3] || null, parts[4] || null, useMaterial, true, DoubleSide);
+    }
+
+    return null;
+}
+
+async function createTextOperation(code, renderModel, currentGroup, loader) {
+    let raw = code.replace("text(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let useMaterial = loader.defMaterial || "lambert";
+
+    if(parts.length >= 1) {
+        let text = getModValue(parts[0], renderModel);
+        const size = parts.length >= 2 ? getModValue(parts[1], renderModel) : 1;
+        const height = parts.length >= 3 ? getModValue(parts[2], renderModel) : 0.2;
+        const bevelSize = parts.length >= 4 ? getModValue(parts[3], renderModel) : 0.02;
+        const bevelThickness = parts.length >= 5 ? getModValue(parts[4], renderModel) : 0.01;
+
+        // Custom font URL support (parameter index 8)
+        // Default font URL (helvetiker from three.js examples)
+        let fontUrl = 'https://threejs.org/examples/fonts/helvetiker_regular.typeface.json';
+        
+        if(parts.length >= 9 && parts[8].trim()) {
+            fontUrl = getModValue(parts[8].trim(), renderModel);
+        }
+        
+        // Load font if not cached
+        if(!loadedFonts[fontUrl]) {
+            const fontLoader = new FontLoader();
+            try {
+                loadedFonts[fontUrl] = await new Promise((resolve, reject) => {
+                    fontLoader.load(fontUrl, resolve, undefined, reject);
+                });
+            } catch(e) {
+                console.warn("Failed to load font:", e);
+                return null;
+            }
+        }
+
+        const font = loadedFonts[fontUrl];
+
+        // Generate cache key
+        let geoName = "text." + text + "." + size + "." + height + "." + bevelSize + "." + bevelThickness + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+
+        let geometry = null;
+
+        if(storedGeometries[geoName]) {
+            geometry = storedGeometries[geoName];
+        } else {
+            geometry = new TextGeometry(text, {
+                font: font,
+                size: size,
+                height: height,
+                curveSegments: 12,
+                bevelEnabled: bevelSize > 0 && bevelThickness > 0,
+                bevelThickness: bevelThickness,
+                bevelSize: bevelSize,
+                bevelOffset: 0,
+                bevelSegments: 5
+            });
+
+            geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
+
+            storedGeometries[geoName] = geometry;
+        }
+
+        if(parts.length > 7) {
+            useMaterial = parts[7].trim();
+        }
+
+        return await setupNewMaterial(renderModel, geometry, currentGroup, parts[5] || null, parts[6] || null, useMaterial, true, undefined);
     }
 
     return null;
@@ -1713,6 +1930,31 @@ function doScaleOperation(id, code, renderModel) {
     }
 }
 
+function doVisibleOperation(id, code, renderModel) {
+
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid) {
+        return;
+    }
+
+    let raw = code.replace("visible(","");
+    raw = raw.replace(")","");
+
+    const value = getModValue(raw, renderModel);
+
+    // Support both boolean-like values: 0/1, true/false, "true"/"false"
+    if(value === 0 || value === "0" || value === false || value === "false") {
+        obid.visible = false;
+    } else if(value === 1 || value === "1" || value === true || value === "true") {
+        obid.visible = true;
+    }
+}
+
 async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthWrite = true, useMaterial = "lambert") {
 
     if(!textureInstruction) {
@@ -2157,6 +2399,11 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
                 if (child.receiveShadow !== undefined) clonedChild.receiveShadow = child.receiveShadow;
                 
             } else if (child instanceof PointLight) {
+                // Skip lights entirely if disabled in loader (major performance boost)
+                if (sourceModel.bmDat.loaderRef && sourceModel.bmDat.loaderRef.enableLights === false) {
+                    return; // Don't clone lights when disabled
+                }
+                
                 // Create new point light with same properties (avoid expensive clone)
                 clonedChild = new PointLight(child.color, child.intensity, child.distance, child.decay);
                 clonedChild.position.copy(child.position);
@@ -2247,8 +2494,19 @@ function getMaterialClass(matname) {
     return MeshBasicMaterial;
 }
 
-// eslint-disable-next-line no-unused-vars
 function createPointLightOperation(code, renderModel, currentGroup, loader) {
+    // PERFORMANCE NOTE: PointLights are expensive in Three.js as they require per-pixel lighting calculations.
+    // For better performance, consider:
+    // - Using emissive materials instead: material(#color,0,0,0) for glowing effects
+    // - Baking lighting into textures using lightmap() for static scenes
+    // - Using MeshBasicMaterial (set defMaterial: "basic" in loader options) which ignores lights
+    // - Setting enableLights: false in loader options to disable all lights
+    
+    // Skip light creation if lights are disabled
+    if (loader && loader.enableLights === false) {
+        return null;
+    }
+    
     let raw = code.replace("pointlight(","");
     raw = raw.replace(")","");
 
@@ -2256,7 +2514,7 @@ function createPointLightOperation(code, renderModel, currentGroup, loader) {
 
     let color = "#ffffff";
     let intensity = 1;
-    let distance = 0;
+    let distance = 10; // Default to limited range for performance (was 0 = infinite)
     let decay = 2;
 
     if(parts.length >= 1 && parts[0].trim()) {
@@ -2285,6 +2543,103 @@ function createPointLightOperation(code, renderModel, currentGroup, loader) {
     }
 
     return light;
+}
+
+/**
+ * Creates a fake light sprite with radial gradient for performance.
+ * Much faster than real point lights - perfect for visual glow effects.
+ */
+// eslint-disable-next-line no-unused-vars
+function createFakeLightOperation(code, renderModel, currentGroup, loader) {
+    let raw = code.replace("fakelight(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    let color = "#ffffff";
+    let size = 1;
+    let intensity = 1;
+
+    if(parts.length >= 1 && parts[0].trim()) {
+        color = getModValue(parts[0], renderModel);
+    }
+
+    if(parts.length >= 2 && parts[1].trim()) {
+        size = getModValue(parts[1], renderModel);
+    }
+
+    if(parts.length >= 3 && parts[2].trim()) {
+        intensity = getModValue(parts[2], renderModel);
+    }
+
+    // Generate cache key for gradient texture based on color and intensity
+    const textureKey = `fakelight_${color}_${intensity}`;
+    
+    let texture = null;
+    if(storedImageCanvases[textureKey]) {
+        // Use cached texture
+        texture = new Texture(storedImageCanvases[textureKey]);
+        texture.needsUpdate = true;
+    } else {
+        // Generate radial gradient texture
+        const canvas = document.createElement('canvas');
+        canvas.width = 128;
+        canvas.height = 128;
+        const ctx = canvas.getContext('2d');
+        
+        const centerX = 64;
+        const centerY = 64;
+        const radius = 64;
+        
+        const gradient = ctx.createRadialGradient(centerX, centerY, 0, centerX, centerY, radius);
+        
+        // Parse color and apply intensity
+        const colorObj = new Color(color);
+        const r = Math.min(255, Math.floor(colorObj.r * 255 * intensity));
+        const g = Math.min(255, Math.floor(colorObj.g * 255 * intensity));
+        const b = Math.min(255, Math.floor(colorObj.b * 255 * intensity));
+        
+        gradient.addColorStop(0, `rgba(${r}, ${g}, ${b}, 1)`);
+        gradient.addColorStop(0.3, `rgba(${r}, ${g}, ${b}, 0.8)`);
+        gradient.addColorStop(0.6, `rgba(${r}, ${g}, ${b}, 0.3)`);
+        gradient.addColorStop(1, `rgba(${r}, ${g}, ${b}, 0)`);
+        
+        ctx.fillStyle = gradient;
+        ctx.fillRect(0, 0, 128, 128);
+        
+        // Cache the canvas
+        storedImageCanvases[textureKey] = canvas;
+        
+        texture = new Texture(canvas);
+        texture.needsUpdate = true;
+    }
+    
+    // Create plane geometry for the sprite
+    const geometry = new PlaneGeometry(size, size);
+    
+    // Create material with additive blending for glow effect
+    const material = new MeshBasicMaterial({
+        map: texture,
+        transparent: true,
+        opacity: 1,
+        depthWrite: false,
+        blending: AdditiveBlending,
+        side: DoubleSide
+    });
+    
+    const mesh = new Mesh(geometry, material);
+    
+    // Mark as billboard so it can face camera (if billboard system is added)
+    mesh.userData.isFakeLight = true;
+    mesh.userData.billboard = true;
+    
+    if(currentGroup) {
+        currentGroup.add(mesh);
+    } else {
+        renderModel.add(mesh);
+    }
+    
+    return mesh;
 }
 
 async function createLatheOperation(code, renderModel, currentGroup, loader) {
@@ -2504,6 +2859,9 @@ async function doMaterialOperation(id, code, renderModel) {
     let metalness = undefined;
     let roughness = undefined;
 
+    let emissive = undefined;
+    let emissiveIntensity = undefined;
+
     let lightMap = undefined;
     let bumpMap = undefined;
 
@@ -2539,7 +2897,7 @@ async function doMaterialOperation(id, code, renderModel) {
         }
     }
 
-    if(parts.length >= 5) {
+    if(parts.length >= 6) {
         bumpMap = getModValue(parts[5], renderModel);
 
         if(bumpMap && bumpMap.indexOf("$") == 0) {
@@ -2547,6 +2905,18 @@ async function doMaterialOperation(id, code, renderModel) {
         } else {
             bumpMap = null;
         }
+    }
+
+    if(parts.length >= 7) {
+        emissive = getModValue(parts[6], renderModel);
+
+        if(!emissive || emissive.length < 7 || emissive[0] != "#") {
+            emissive = undefined;
+        }
+    }
+
+    if(parts.length >= 8) {
+        emissiveIntensity = getModValue(parts[7], renderModel);
     }
 
     if(color && color.length == 7 && color[0] == "#") {
@@ -2577,6 +2947,13 @@ async function doMaterialOperation(id, code, renderModel) {
         obid.material.bumpMap = null;
     }
 
+    if(emissive && emissive.length == 7 && emissive[0] == "#") {
+        obid.material.emissive = new Color(emissive);
+    }
+
+    if(emissiveIntensity !== undefined && !isNaN(parseFloat(emissiveIntensity))) {
+        obid.material.emissiveIntensity = parseFloat(emissiveIntensity);
+    }
 
     obid.material.needsUpdate = true;
 }
