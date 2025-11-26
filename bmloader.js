@@ -29,8 +29,8 @@ import {
     MeshToonMaterial,
     Color,
     FrontSide,
-    InstancedMesh,
-    Object3D,
+    SpriteMaterial,
+    Sprite,
     PointLight,
     Texture,
     AdditiveBlending,
@@ -1382,8 +1382,9 @@ async function createTextOperation(code, renderModel, currentGroup, loader) {
 
         const font = loadedFonts[fontUrl];
 
-        // Generate cache key
-        let geoName = "text." + text + "." + size + "." + height + "." + bevelSize + "." + bevelThickness + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+        // Generate cache key (include font URL to prevent geometry reuse across different fonts)
+        const fontHash = hash(fontUrl);
+        let geoName = "text." + text + "." + size + "." + height + "." + bevelSize + "." + bevelThickness + "." + fontHash + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
 
         let geometry = null;
 
@@ -1392,12 +1393,12 @@ async function createTextOperation(code, renderModel, currentGroup, loader) {
         } else {
             geometry = new TextGeometry(text, {
                 font: font,
-                size: size,
-                height: height,
+                size: parseFloat(size),
+                height: parseFloat(height),
                 curveSegments: 12,
                 bevelEnabled: bevelSize > 0 && bevelThickness > 0,
-                bevelThickness: bevelThickness,
-                bevelSize: bevelSize,
+                bevelThickness: parseFloat(bevelThickness),
+                bevelSize: parseFloat(bevelSize),
                 bevelOffset: 0,
                 bevelSegments: 5
             });
@@ -2618,7 +2619,7 @@ function createFakeLightOperation(code, renderModel, currentGroup, loader) {
     const geometry = new PlaneGeometry(size, size);
     
     // Create material with additive blending for glow effect
-    const material = new MeshBasicMaterial({
+    const material = new SpriteMaterial({
         map: texture,
         transparent: true,
         opacity: 1,
@@ -2627,11 +2628,13 @@ function createFakeLightOperation(code, renderModel, currentGroup, loader) {
         side: DoubleSide
     });
     
-    const mesh = new Mesh(geometry, material);
+    const mesh = new Sprite(geometry, material);
     
     // Mark as billboard so it can face camera (if billboard system is added)
     mesh.userData.isFakeLight = true;
     mesh.userData.billboard = true;
+    mesh.castShadow = false;
+    mesh.receiveShadow = false;
     
     if(currentGroup) {
         currentGroup.add(mesh);
