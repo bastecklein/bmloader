@@ -485,8 +485,6 @@ function doAnimate(model, inst, delta) {
         // Handle material property animations (emissiveIntensity, opacity, etc.)
         if(inst.action.indexOf("emissiveIntensity") == 0) {
 
-            console.log(inst);
-
             if(!ob.material) return;
             
             target = parseFloat(tgtVal);
