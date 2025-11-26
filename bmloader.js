@@ -2803,7 +2803,14 @@ async function doLightmapOperation(id, code, renderModel) {
     let raw = code.replace("lightmap(","");
     raw = raw.replace(")","");
 
-    const textureRef = raw.trim();
+    const parts = raw.split(",");
+
+    if(parts.length < 1) {
+        console.warn("Lightmap operation requires a texture reference.");
+        return;
+    }
+
+    const textureRef = parts[0].trim();
     
     if(textureRef && textureRef.indexOf("$") == 0) {
         const texture = await loadTexture(textureRef, renderModel);
@@ -2812,6 +2819,15 @@ async function doLightmapOperation(id, code, renderModel) {
             obid.material.needsUpdate = true;
         } else {
             console.warn("Lightmap texture not found:", textureRef);
+        }
+    }
+
+    if(parts.length >= 2) {
+        const intensityPart = getModValue(parts[1], renderModel);
+
+        if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
+            obid.material.lightMapIntensity = parseFloat(intensityPart);
+            obid.material.needsUpdate = true;
         }
     }
 }
@@ -2871,7 +2887,9 @@ async function doBumpmapOperation(id, code, renderModel) {
     let raw = code.replace("bumpmap(","");
     raw = raw.replace(")","");
 
-    const textureRef = raw.trim();
+    const parts = raw.split(",");
+
+    const textureRef = parts[0].trim();
     
     if(textureRef && textureRef.indexOf("$") == 0) {
         const texture = await loadTexture(textureRef, renderModel);
@@ -2880,6 +2898,15 @@ async function doBumpmapOperation(id, code, renderModel) {
             obid.material.needsUpdate = true;
         } else {
             console.warn("Bumpmap texture not found:", textureRef);
+        }
+    }
+
+    if(parts.length >= 2) {
+        const intensityPart = getModValue(parts[1], renderModel);
+
+        if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
+            obid.material.bumpMapIntensity = parseFloat(intensityPart);
+            obid.material.needsUpdate = true;
         }
     }
 }
