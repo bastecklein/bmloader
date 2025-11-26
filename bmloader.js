@@ -2156,6 +2156,18 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
                 if (child.castShadow !== undefined) clonedChild.castShadow = child.castShadow;
                 if (child.receiveShadow !== undefined) clonedChild.receiveShadow = child.receiveShadow;
                 
+            } else if (child instanceof PointLight) {
+                // Create new point light with same properties (avoid expensive clone)
+                clonedChild = new PointLight(child.color, child.intensity, child.distance, child.decay);
+                clonedChild.position.copy(child.position);
+                clonedChild.rotation.copy(child.rotation);
+                clonedChild.scale.copy(child.scale);
+                
+                // Copy light-specific properties
+                clonedChild.castShadow = false; // Always disable shadows for performance
+                if (child.name) clonedChild.name = child.name;
+                if (child.visible !== undefined) clonedChild.visible = child.visible;
+                
             } else if (child instanceof Group) {
                 // Create new group
                 clonedChild = new Group();
