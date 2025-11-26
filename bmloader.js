@@ -484,6 +484,9 @@ function doAnimate(model, inst, delta) {
 
         // Handle material property animations (emissiveIntensity, opacity, etc.)
         if(inst.action.indexOf("emissiveIntensity") == 0) {
+
+            console.log(inst);
+
             if(!ob.material) return;
             
             target = parseFloat(tgtVal);
@@ -890,6 +893,13 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         if (mod.startsWith("bumpmap(")) {
             (usingVar ? await doBumpmapOperation(usingVar, mod, renderModel)
                 : usingObj && await doBumpmapOperation(usingObj, mod, renderModel));
+            continue;
+        }
+
+        // Handle bumpmap operation
+        if (mod.startsWith("emissive(")) {
+            (usingVar ? await doEmissiveOperation(usingVar, mod, renderModel)
+                : usingObj && await doEmissiveOperation(usingObj, mod, renderModel));
             continue;
         }
 
@@ -2616,19 +2626,16 @@ function createFakeLightOperation(code, renderModel, currentGroup, loader) {
     }
     
     // Create plane geometry for the sprite
-    const geometry = new PlaneGeometry(size, size);
+    //const geometry = new PlaneGeometry(size, size);
     
     // Create material with additive blending for glow effect
     const material = new SpriteMaterial({
         map: texture,
         transparent: true,
-        opacity: 1,
-        depthWrite: false,
-        blending: AdditiveBlending,
-        side: DoubleSide
+        blending: AdditiveBlending
     });
-    
-    const mesh = new Sprite(geometry, material);
+
+    const mesh = new Sprite(material);
     
     // Mark as billboard so it can face camera (if billboard system is added)
     mesh.userData.isFakeLight = true;
@@ -2807,6 +2814,46 @@ async function doLightmapOperation(id, code, renderModel) {
             console.warn("Lightmap texture not found:", textureRef);
         }
     }
+}
+
+async function doEmissiveOperation(id, code, renderModel) {
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid || !obid.material) {
+        console.warn("Invalid object for emissive operation:", id);
+        return;
+    }
+
+    let raw = code.replace("emissive(","");
+    raw = raw.replace(")","");
+
+    const parts = raw.split(",");
+
+    if(parts.length < 1) {
+        console.warn("Emissive operation requires at least a color value.");
+        return;
+    }
+
+    const colorPart = getModValue(parts[0], renderModel);
+    let intensityPart = 1;
+
+    if(parts.length >= 2) {
+        intensityPart = getModValue(parts[1], renderModel);
+    }
+
+    if(colorPart && colorPart.length == 7 && colorPart[0] == "#") {
+        obid.material.emissive = new Color(colorPart);
+    }
+
+    if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
+        obid.material.emissiveIntensity = parseFloat(intensityPart);
+    }
+
+    obid.material.needsUpdate = true;
 }
 
 async function doBumpmapOperation(id, code, renderModel) {
