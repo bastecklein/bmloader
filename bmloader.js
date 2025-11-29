@@ -653,6 +653,75 @@ async function loadBM(modelData, options, loader) {
     return renderModel;
 }
 
+/**
+ * Checks if a string contains geometry creation operations
+ * @param {string} str - The string to check
+ * @return {boolean} True if it contains geometry operations
+ */
+function hasGeometryOperation(str) {
+    const geometryOps = [
+        'sphere(', 'box(', 'cylinder(', 'cone(', 'torus(', 'capsule(',
+        'shape(', 'plane(', 'lathe(', 'ring(', 'text(', 'pointlight(',
+        'fakelight(', 'decal(', 'empty()', 'startgroup()', 'startmerge()',
+        'usegeo('
+    ];
+    
+    return geometryOps.some(op => str.includes(op));
+}
+
+/**
+ * Checks if a string contains transform operations
+ * @param {string} str - The string to check
+ * @return {boolean} True if it contains transform operations
+ */
+function isTransformString(str) {
+    const transformOps = [
+        'position(', 'rotate(', 'scale(', 'orientation(',
+        'material(', 'lightmap(', 'bumpmap(', 'opacity('
+    ];
+    
+    return typeof str === 'string' && transformOps.some(op => str.includes(op));
+}
+
+/**
+ * Applies stored transform operations to an object
+ * @param {string} transformStr - The transform string (e.g., "position(0,1,0) > rotate(45,0,0)")
+ * @param {Object} targetObj - The object to apply transforms to
+ * @param {RenderBasicModel} renderModel - The render model
+ * @param {BMLoader} loader - The loader instance
+ */
+// eslint-disable-next-line no-unused-vars
+async function applyTransformString(transformStr, targetObj, renderModel, loader) {
+    const transforms = transformStr.split('>');
+    
+    console.log('Applying transforms:', transformStr, 'to object:', targetObj);
+    
+    for (let transform of transforms) {
+        transform = transform.trim();
+        if (!transform) continue;
+        
+        console.log('Applying transform:', transform);
+        
+        // Apply each transform operation
+        if (transform.startsWith('position(')) {
+            doPositionOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('rotate(')) {
+            doRotateOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('scale(')) {
+            doScaleOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('orientation(')) {
+            doOrientationOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('material(')) {
+            await doMaterialOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('lightmap(')) {
+            await doLightmapOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('bumpmap(')) {
+            await doBumpmapOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('opacity(')) {
+            doOpacityOperation(targetObj, transform, renderModel);
+        }
+    }
+}
 
 /**
  * @param {String} line The instruction line to parse
@@ -686,9 +755,20 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
     const modParts = codeParts.split(">");
 
     // If this is a simple expression or literal assignment (no ">" present), store directly
+    // BUT exclude transform operations - those should be stored as strings for later application
     if (modParts.length === 1 && usingVar && !modParts[0].includes("(") && !modParts[0].startsWith("@")) {
         renderModel.bmDat.variables[usingVar] = modParts[0].trim();
         return;
+    }
+    
+    // Check if this is a transform-only assignment (no geometry creation in any part)
+    if (usingVar) {
+        const hasGeometry = modParts.some(part => hasGeometryOperation(part));
+        if (!hasGeometry && isTransformString(codeParts)) {
+            // Store the transform operations as a string (single or multiple operations)
+            renderModel.bmDat.variables[usingVar] = codeParts;
+            return;
+        }
     }
 
     for (let mod of modParts) {
@@ -698,12 +778,20 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         // Handle variable references
         if (mod.startsWith("$")) {
             const evals = mod.replace("$", "");
+            const varValue = renderModel.bmDat.variables[evals];
 
-            if (usingVar && renderModel.bmDat.variables[evals]) {
-                renderModel.bmDat.variables[usingVar] = renderModel.bmDat.variables[evals];
+            // Check if variable contains transform operations and we have an object to apply to
+            if (usingObj && typeof varValue === 'string' && isTransformString(varValue)) {
+                // Apply stored transforms to the current object
+                await applyTransformString(varValue, usingObj, renderModel, loader);
+                continue;
+            }
+            
+            if (usingVar && varValue) {
+                renderModel.bmDat.variables[usingVar] = varValue;
             } else {
                 usingVar = evals;
-                usingObj = renderModel.bmDat.variables[evals] || null;
+                usingObj = varValue || null;
             }
             continue;
         }
@@ -853,6 +941,10 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
                     currentGroup.mergeList.push(usingObj);
                 } else if (usingVar) {
                     renderModel.bmDat.variables[usingVar] = usingObj;
+                } else if (usingObj && !currentGroup.grp) {
+                    // No variable assignment and no group - add directly to scene
+                    // This handles cases like: box(1,1,1) > position(0,5,0)
+                    renderModel.add(usingObj);
                 }
                 
                 handled = true;
@@ -1851,7 +1943,8 @@ function doRotateOperation(id,code,renderModel) {
         obid = renderModel.bmDat.variables[id];
     }
 
-    if(!obid) {
+    if(!obid || !obid.rotation) {
+        console.warn("Invalid object for rotate operation:", id);
         return;
     }
 
@@ -1885,7 +1978,7 @@ function doOpacityOperation(id, code, renderModel) {
     let raw = code.replace("opacity(","");
     raw = raw.replace(")","");
 
-    let opVal = parseInt(raw);
+    let opVal = parseFloat(raw);
 
     if(isNaN(opVal)) {
         opVal = 1;
@@ -1901,11 +1994,16 @@ function doOpacityOperation(id, code, renderModel) {
 
     if(obid.material) {
         if(Array.isArray(obid.material)) {
-            for(let i = 0; i < obid.material.length; i++) {
-                obid.material[i].opacity = opVal;
-                obid.material[i].transparent = true;
-            }
+            // Clone each material in the array to avoid affecting other objects
+            obid.material = obid.material.map(mat => {
+                const clonedMat = mat.clone();
+                clonedMat.opacity = opVal;
+                clonedMat.transparent = true;
+                return clonedMat;
+            });
         } else {
+            // Clone the material to avoid affecting other objects
+            obid.material = obid.material.clone();
             obid.material.opacity = opVal;
             obid.material.transparent = true;
         }
@@ -1920,7 +2018,8 @@ function doScaleOperation(id, code, renderModel) {
         obid = renderModel.bmDat.variables[id];
     }
 
-    if(!obid) {
+    if(!obid || !obid.scale) {
+        console.warn("Invalid object for scale operation:", id);
         return;
     }
 
@@ -2924,6 +3023,13 @@ async function doMaterialOperation(id, code, renderModel) {
         console.warn("Render Model:", renderModel);
         console.warn(obid);
         return;
+    }
+
+    // Clone the material to avoid affecting other objects that might share it
+    if(Array.isArray(obid.material)) {
+        obid.material = obid.material.map(mat => mat.clone());
+    } else {
+        obid.material = obid.material.clone();
     }
 
     let raw = code.replace("material(","");
