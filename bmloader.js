@@ -98,8 +98,13 @@ class BMLoader extends Loader {
                     // Cache the first fully-loaded model for future cloning
                     if(!loadedRenderModels[cacheKey]) {
                         loadedRenderModels[cacheKey] = renderModel;
+                        // Return a clone of the cached model, not the original
+                        // This prevents material sharing between the cached version and instances
+                        const clone = renderModel.clone();
+                        onLoad(clone);
+                    } else {
+                        onLoad(renderModel);
                     }
-                    onLoad(renderModel);
                 });
 
                 return;
@@ -127,8 +132,12 @@ class BMLoader extends Loader {
                     // Cache the first fully-loaded model for future cloning
                     if(!loadedRenderModels[cacheKey]) {
                         loadedRenderModels[cacheKey] = renderModel;
+                        // Return a clone of the cached model, not the original
+                        const clone = renderModel.clone(url.variables);
+                        onLoad(clone);
+                    } else {
+                        onLoad(renderModel);
                     }
-                    onLoad(renderModel);
                 });
 
                 return;
@@ -155,8 +164,12 @@ class BMLoader extends Loader {
                 // Cache the first fully-loaded model for future cloning
                 if(!loadedRenderModels[url]) {
                     loadedRenderModels[url] = renderModel;
+                    // Return a clone of the cached model, not the original
+                    const clone = renderModel.clone(options?.variables);
+                    onLoad(clone);
+                } else {
+                    onLoad(renderModel);
                 }
-                onLoad(renderModel);
             });
 
             return;
@@ -174,8 +187,12 @@ class BMLoader extends Loader {
                 // Cache the first fully-loaded model for future cloning
                 if(!loadedRenderModels[url]) {
                     loadedRenderModels[url] = renderModel;
+                    // Return a clone of the cached model, not the original
+                    const clone = renderModel.clone(options?.variables);
+                    onLoad(clone);
+                } else {
+                    onLoad(renderModel);
                 }
-                onLoad(renderModel);
             });
 
             
