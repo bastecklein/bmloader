@@ -2457,14 +2457,19 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
     }
     
     // Clone the three.js hierarchy (meshes, groups, etc.)
-    // This shares geometries and materials but creates new mesh instances
+    // This shares geometries but clones materials to prevent color mixing bugs
     function cloneObject3D(source, parent) {
         source.children.forEach(child => {
             let clonedChild;
             
             if (child instanceof Mesh) {
-                // Create new mesh with SHARED geometry and material
-                clonedChild = new Mesh(child.geometry, child.material);
+                // Create new mesh with SHARED geometry but CLONED material
+                // Materials must be cloned to prevent color contamination between instances
+                const clonedMaterial = Array.isArray(child.material) 
+                    ? child.material.map(mat => mat.clone())
+                    : child.material.clone();
+                    
+                clonedChild = new Mesh(child.geometry, clonedMaterial);
                 clonedChild.position.copy(child.position);
                 clonedChild.rotation.copy(child.rotation);
                 clonedChild.scale.copy(child.scale);
