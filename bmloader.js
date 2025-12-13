@@ -50,6 +50,22 @@ const storedMaterials = {};
 const loadedRenderModels = {}; // Cache for fully-loaded render models
 const loadedFonts = {}; // Cache for loaded fonts
 
+/**
+ * Generates a cache key including variable overrides
+ * @param {string} baseKey - Base cache key (url or model id)
+ * @param {Object} variables - Variable overrides object
+ * @return {string} Cache key with overrides hash
+ */
+function getCacheKeyWithOverrides(baseKey, variables) {
+    if (!variables || Object.keys(variables).length === 0) {
+        return baseKey;
+    }
+    // Create deterministic string from variables
+    const varKeys = Object.keys(variables).sort();
+    const varString = varKeys.map(k => `${k}:${variables[k]}`).join('|');
+    return `${baseKey}_vars_${hash(varString)}`;
+}
+
 const DEF_MODEL_COLOR = "#999999";
 const FULLTURN = MathUtils.degToRad(360);
 
@@ -82,7 +98,7 @@ class BMLoader extends Loader {
                 // Use model ID and revision as cache key for object-based loads
                 const cacheKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
                 
-                // Check if we have a cached render model to clone
+                // Check if we have a cached render model to clone (no overrides case)
                 if(loadedRenderModels[cacheKey]) {
                     const clone = loadedRenderModels[cacheKey].clone();
                     if (clone) {
@@ -98,13 +114,10 @@ class BMLoader extends Loader {
                     // Cache the first fully-loaded model for future cloning
                     if(!loadedRenderModels[cacheKey]) {
                         loadedRenderModels[cacheKey] = renderModel;
-                        // Return a clone of the cached model, not the original
-                        // This prevents material sharing between the cached version and instances
-                        const clone = renderModel.clone();
-                        onLoad(clone);
-                    } else {
-                        onLoad(renderModel);
                     }
+                    // ALWAYS return a clone to prevent material sharing between instances
+                    const clone = renderModel.clone();
+                    onLoad(clone);
                 });
 
                 return;
@@ -113,12 +126,13 @@ class BMLoader extends Loader {
             if(url.json && url.json.script && url.json.id) {
                 modelDat = rebuildBM(url.json);
                 
-                // Use model ID and revision as cache key for object-based loads
-                const cacheKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
+                // Use model ID, revision, AND variable overrides in cache key
+                const baseKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
+                const cacheKey = getCacheKeyWithOverrides(baseKey, url.variables);
                 
-                // Check if we have a cached render model to clone
+                // Check if we have a cached render model with these exact overrides
                 if(loadedRenderModels[cacheKey]) {
-                    const clone = loadedRenderModels[cacheKey].clone(url.variables);
+                    const clone = loadedRenderModels[cacheKey].clone();
                     if (clone) {
                         onLoad(clone);
                         return;
@@ -129,15 +143,13 @@ class BMLoader extends Loader {
                 }
 
                 loadBM(modelDat, url, scope).then(function(renderModel) {
-                    // Cache the first fully-loaded model for future cloning
+                    // Cache with override-specific key for future cloning
                     if(!loadedRenderModels[cacheKey]) {
                         loadedRenderModels[cacheKey] = renderModel;
-                        // Return a clone of the cached model, not the original
-                        const clone = renderModel.clone(url.variables);
-                        onLoad(clone);
-                    } else {
-                        onLoad(renderModel);
                     }
+                    // ALWAYS return a clone to prevent material sharing between instances
+                    const clone = renderModel.clone();
+                    onLoad(clone);
                 });
 
                 return;
@@ -153,23 +165,24 @@ class BMLoader extends Loader {
         }
 
         if(remoteModels[url]) {
-            // Check if we have a fully-loaded render model to clone
-            if(loadedRenderModels[url]) {
-                const clone = loadedRenderModels[url].clone(options?.variables);
+            // Include variable overrides in cache key
+            const cacheKey = getCacheKeyWithOverrides(url, options?.variables);
+            
+            // Check if we have a fully-loaded render model with these exact overrides
+            if(loadedRenderModels[cacheKey]) {
+                const clone = loadedRenderModels[cacheKey].clone();
                 onLoad(clone);
                 return;
             }
             
             loadBM(remoteModels[url], options, scope).then(function(renderModel) {
-                // Cache the first fully-loaded model for future cloning
-                if(!loadedRenderModels[url]) {
-                    loadedRenderModels[url] = renderModel;
-                    // Return a clone of the cached model, not the original
-                    const clone = renderModel.clone(options?.variables);
-                    onLoad(clone);
-                } else {
-                    onLoad(renderModel);
+                // Cache with override-specific key for future cloning
+                if(!loadedRenderModels[cacheKey]) {
+                    loadedRenderModels[cacheKey] = renderModel;
                 }
+                // ALWAYS return a clone to prevent material sharing between instances
+                const clone = renderModel.clone();
+                onLoad(clone);
             });
 
             return;
@@ -183,16 +196,17 @@ class BMLoader extends Loader {
             modelDat = rebuildBM(data);
             remoteModels[url] = modelDat;
 
+            // Include variable overrides in cache key
+            const cacheKey = getCacheKeyWithOverrides(url, options?.variables);
+
             loadBM(modelDat, options, scope).then(function(renderModel) {
-                // Cache the first fully-loaded model for future cloning
-                if(!loadedRenderModels[url]) {
-                    loadedRenderModels[url] = renderModel;
-                    // Return a clone of the cached model, not the original
-                    const clone = renderModel.clone(options?.variables);
-                    onLoad(clone);
-                } else {
-                    onLoad(renderModel);
+                // Cache with override-specific key for future cloning
+                if(!loadedRenderModels[cacheKey]) {
+                    loadedRenderModels[cacheKey] = renderModel;
                 }
+                // ALWAYS return a clone to prevent material sharing between instances
+                const clone = renderModel.clone();
+                onLoad(clone);
             });
 
             
