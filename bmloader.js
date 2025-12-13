@@ -2074,19 +2074,8 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
     if(txInst.length == 1) {
         const texture = await loadTexture(txInst[0], renderModel);
         
-        // Generate cache key for material
-        const matKey = generateMaterialKey({
-            textureHash: texture ? hash(txInst[0]) : null,
-            transparent: transparent,
-            depthWrite: depthWrite,
-            color: withColor,
-            materialType: useMaterial
-        });
-
-        // Check if material already exists in cache
-        if(storedMaterials[matKey]) {
-            return storedMaterials[matKey];
-        }
+        // DO NOT CACHE MATERIALS - creates color mixing bugs when multiple instances share materials
+        // Materials are lightweight - caching provides minimal benefit but causes issues
 
         let mapOptions = {
             map: texture,
@@ -2100,9 +2089,6 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
 
         const matClass = getMaterialClass(useMaterial);
         const material = new matClass(mapOptions);
-        
-        // Cache the material
-        storedMaterials[matKey] = material;
 
         return material;
     }
@@ -2112,21 +2098,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
     for(let i = 0; i < txInst.length; i++) {
         const texture = await loadTexture(txInst[i], renderModel);
         
-        // Generate cache key for each material in array
-        const matKey = generateMaterialKey({
-            textureHash: texture ? hash(txInst[i]) : null,
-            transparent: transparent,
-            depthWrite: depthWrite,
-            color: withColor,
-            materialType: useMaterial,
-            side: DoubleSide
-        });
-
-        // Check if material already exists in cache
-        if(storedMaterials[matKey]) {
-            mapping.push(storedMaterials[matKey]);
-            continue;
-        }
+        // DO NOT CACHE MATERIALS - creates color mixing bugs when multiple instances share materials
 
         let mapOptions = {
             map: texture,
@@ -2141,9 +2113,6 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
 
         const matClass = getMaterialClass(useMaterial);
         const material = new matClass(mapOptions);
-        
-        // Cache the material
-        storedMaterials[matKey] = material;
         
         mapping.push(material);
     }
@@ -2851,28 +2820,12 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
         const matClass = getMaterialClass(useMaterial);
         const color = (colPart && colPart.length == 7 && colPart[0] == "#") ? colPart : DEF_MODEL_COLOR;
         
-        // Generate cache key for color-only materials
-        const matKey = generateMaterialKey({
-            textureHash: null,
-            transparent: false,
-            depthWrite: depthWrite,
+        // DO NOT CACHE MATERIALS - creates color mixing bugs when multiple instances share materials
+        // Each mesh should have its own material instance to prevent cross-contamination
+        material = new matClass({
             color: color,
-            materialType: useMaterial,
             side: side
         });
-
-        // Check if material already exists in cache
-        if(storedMaterials[matKey]) {
-            material = storedMaterials[matKey];
-        } else {
-            material = new matClass({
-                color: color,
-                side: side
-            });
-            
-            // Cache the material
-            storedMaterials[matKey] = material;
-        }
     }
 
     mesh = new Mesh(geometry, material);
