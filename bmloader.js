@@ -12,6 +12,7 @@ import {
     BoxGeometry,
     ConeGeometry,
     CylinderGeometry,
+    CircleGeometry,
     DoubleSide,
     SRGBColorSpace,
     TextureLoader,
@@ -1779,22 +1780,28 @@ async function createCylinderOperation(code, renderModel, currentGroup, loader) 
     let height = 1;
     let segs = 1;
     let useMaterial = loader.defMaterial || "lambert";
+    let capMode = "closed";
 
     if(parts.length >= 4) {
 
-        radTop = getModValue(parts[0],renderModel);
-        radBottom = getModValue(parts[1],renderModel);
-        height = getModValue(parts[2],renderModel);
-        segs = getModValue(parts[3],renderModel);
+        radTop = getModValue(parts[0], renderModel);
+        radBottom = getModValue(parts[1], renderModel);
+        height = getModValue(parts[2], renderModel);
+        segs = getModValue(parts[3], renderModel);
 
-        let geoName = "cylinder." + radTop + "." + radBottom + "." + height + "." + segs + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
+        if(parts.length > 7) {
+            capMode = parts[7].trim();
+        }
+
+        const normalizedCapMode = normalizeCylinderCapMode(capMode);
+        let geoName = "cylinder." + radTop + "." + radBottom + "." + height + "." + segs + "." + normalizedCapMode + "." + renderModel.bmDat.geoTranslate.x + "." + renderModel.bmDat.geoTranslate.y + "." + renderModel.bmDat.geoTranslate.z;
 
         let geometry = null;
 
         if(storedGeometries[geoName]) {
             geometry = storedGeometries[geoName];
         } else {
-            geometry = new CylinderGeometry(radTop,radBottom,height,segs);
+            geometry = createCylinderGeometryWithCaps(radTop, radBottom, height, segs, normalizedCapMode);
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
@@ -1809,6 +1816,64 @@ async function createCylinderOperation(code, renderModel, currentGroup, loader) 
     }
 
     return null;
+}
+
+function normalizeCylinderCapMode(capMode) {
+    if(!capMode) {
+        return "closed";
+    }
+
+    const normalized = String(capMode).trim().toLowerCase();
+
+    if(normalized === "open" || normalized === "openended" || normalized === "open-ended") {
+        return "open";
+    }
+
+    if(normalized === "opentop") {
+        return "openTop";
+    }
+
+    if(normalized === "openbottom") {
+        return "openBottom";
+    }
+
+    if(normalized === "closed") {
+        return "closed";
+    }
+
+    return normalized;
+}
+
+function createCylinderGeometryWithCaps(radTop, radBottom, height, segs, capMode) {
+    const normalizedCapMode = normalizeCylinderCapMode(capMode);
+    const sideGeometry = new CylinderGeometry(radTop, radBottom, height, segs, 1, true);
+
+    if(normalizedCapMode === "open") {
+        return sideGeometry;
+    }
+
+    const geometries = [sideGeometry];
+    const capSegments = Math.max(3, Math.floor(segs || 1));
+
+    if(normalizedCapMode !== "openTop" && radTop > 0) {
+        const topCap = new CircleGeometry(radTop, capSegments);
+        topCap.rotateX(-Math.PI / 2);
+        topCap.translate(0, height / 2, 0);
+        geometries.push(topCap);
+    }
+
+    if(normalizedCapMode !== "openBottom" && radBottom > 0) {
+        const bottomCap = new CircleGeometry(radBottom, capSegments);
+        bottomCap.rotateX(Math.PI / 2);
+        bottomCap.translate(0, -height / 2, 0);
+        geometries.push(bottomCap);
+    }
+
+    if(geometries.length === 1) {
+        return sideGeometry;
+    }
+
+    return mergeGeometries(geometries, false) || sideGeometry;
 }
 
 function handleGeoTranslate(code, renderModel) {

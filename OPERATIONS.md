@@ -70,7 +70,7 @@ $wall > plane(5, 3, transparent, $wallTex)
 
 ---
 
-### cylinder(radiusTop, radiusBottom, height, segments, [color], [texture], [materialType])
+### cylinder(radiusTop, radiusBottom, height, segments, [color], [texture], [materialType], [capMode])
 Creates a cylindrical geometry.
 
 **Parameters:**
@@ -81,11 +81,15 @@ Creates a cylindrical geometry.
 - `color` (optional) - Hex color code
 - `texture` (optional) - Texture reference
 - `materialType` (optional) - Material type
+- `capMode` (optional) - Cylinder cap mode: `closed` (default), `open`/`openEnded`, `openTop`, or `openBottom`
 
 **Example:**
 ```javascript
 $pillar > cylinder(1, 1, 5, 16, #cccccc)
 $cone > cylinder(0, 1, 2, 16, #ff0000)
+$can > cylinder(1, 1, 3, 24, #cccccc, , , open)
+$pipe > cylinder(1, 1, 4, 24, #999999, , , openTop)
+$cup > cylinder(1, 1, 4, 24, #999999, , , openBottom)
 ```
 
 ---

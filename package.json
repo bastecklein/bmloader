@@ -25,7 +25,7 @@
     "config": {},
     "dependencies": {
         "three": "*",
-        "common-helpers": "git+ssh://git@github.com:bastecklein/common-helpers.git#main",
+        "common-helpers": "https://github.com/bastecklein/common-helpers",
         "expr-eval": "*"
     },
     "devDependencies": {
