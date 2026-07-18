@@ -81,7 +81,8 @@ Creates a cylindrical geometry.
 - `color` (optional) - Hex color code
 - `texture` (optional) - Texture reference
 - `materialType` (optional) - Material type
-- `capMode` (optional) - Cylinder cap mode: `closed` (default), `open`/`openEnded`, `openTop`, or `openBottom`
+- `capMode` (optional) - Cylinder cap mode: `closed` (default) or `open`/`openEnded`
+- `openTop` and `openBottom` are accepted aliases and currently behave like `open`
 
 **Example:**
 ```javascript

@@ -12,7 +12,6 @@ import {
     BoxGeometry,
     ConeGeometry,
     CylinderGeometry,
-    CircleGeometry,
     DoubleSide,
     SRGBColorSpace,
     TextureLoader,
@@ -1847,41 +1846,14 @@ function normalizeCylinderCapMode(capMode) {
 
 function createCylinderGeometryWithCaps(radTop, radBottom, height, segs, capMode) {
     const normalizedCapMode = normalizeCylinderCapMode(capMode);
-    const sideGeometry = new CylinderGeometry(radTop, radBottom, height, segs, 1, true);
 
-    if(normalizedCapMode === "open") {
-        return sideGeometry;
+    if(normalizedCapMode === "closed") {
+        return new CylinderGeometry(radTop, radBottom, height, segs, 1, false);
     }
 
-    const geometries = [sideGeometry];
-    const capSegments = Math.max(3, Math.floor(segs || 1));
-
-    if(normalizedCapMode !== "openTop" && radTop > 0) {
-        const topCap = new CircleGeometry(radTop, capSegments);
-        topCap.rotateX(-Math.PI / 2);
-        topCap.translate(0, height / 2, 0);
-        geometries.push(topCap);
-    }
-
-    if(normalizedCapMode !== "openBottom" && radBottom > 0) {
-        const bottomCap = new CircleGeometry(radBottom, capSegments);
-        bottomCap.rotateX(Math.PI / 2);
-        bottomCap.translate(0, -height / 2, 0);
-        geometries.push(bottomCap);
-    }
-
-    if(geometries.length === 1) {
-        return sideGeometry;
-    }
-
-    const mergedGeometry = mergeGeometries(geometries, false);
-
-    if(mergedGeometry) {
-        mergedGeometry.computeVertexNormals();
-        return mergedGeometry;
-    }
-
-    return sideGeometry;
+    // Native CylinderGeometry supports only fully closed or fully open-ended caps.
+    // Treat partial cap modes as open-ended to avoid custom-merge shading artifacts.
+    return new CylinderGeometry(radTop, radBottom, height, segs, 1, true);
 }
 
 function handleGeoTranslate(code, renderModel) {
