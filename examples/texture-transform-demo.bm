@@ -1,0 +1,14 @@
+{
+    "id": "texture-transform-demo",
+    "revision": 1,
+    "author": "GitHub Copilot",
+    "script": "$panel > plane(4, 4, #ffffff, $badge&offsetX=0.15&offsetY=0.1&rotation=18&centerX=0.5&centerY=0.5&wrap=clamp) > rotate(-90, 0, 0)\n$panel > position(0, 0.01, 0)",
+    "textures": {
+        "badge": {
+            "type": "image/svg+xml",
+            "data": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 256 256'><rect width='256' height='256' rx='24' fill='#f3efe5'/><rect x='28' y='28' width='200' height='200' rx='18' fill='#d96f32'/><circle cx='128' cy='128' r='54' fill='#fff7e8'/><path d='M128 76l16 34 38 5-28 27 7 38-33-18-33 18 7-38-28-27 38-5z' fill='#6e2a11'/></svg>",
+            "frames": 1,
+            "varName": "badge"
+        }
+    }
+}

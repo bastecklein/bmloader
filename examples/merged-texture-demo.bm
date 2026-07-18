@@ -1,0 +1,14 @@
+{
+    "id": "merged-texture-demo",
+    "revision": 1,
+    "author": "GitHub Copilot",
+    "script": "$merged = startmerge()\nbox(1.2, 1.2, 1.2) > position(-0.75, 0.6, 0)\nbox(1.2, 1.2, 1.2) > position(0.75, 0.6, 0)\nplane(3.5, 3.5, #ffffff) > rotate(-90, 0, 0)\nendmerge()\n$merged > texture($checker&repeatX=2&repeatY=2)\n$merged > material(#ffffff, 0, 0, 1)",
+    "textures": {
+        "checker": {
+            "type": "image/svg+xml",
+            "data": "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 120 120'><rect width='120' height='120' fill='#f0e7d8'/><rect x='0' y='0' width='60' height='60' fill='#be8a4a'/><rect x='60' y='60' width='60' height='60' fill='#be8a4a'/><path d='M0 60h120M60 0v120' stroke='#6c4a25' stroke-width='4'/></svg>",
+            "frames": 1,
+            "varName": "checker"
+        }
+    }
+}

@@ -318,6 +318,30 @@ $insideOnly > plane(4, 4, #ffffff, $wallTex) > material(#ffffff, 0, 0, 0, 0, 0, 
 
 ---
 
+### texture($texture)
+Applies or replaces the main color texture on an existing object.
+
+This is useful for merged geometry created with `startmerge()` / `endmerge()`, because merged meshes do not have a creation-time texture slot.
+
+Texture references can include optional modifiers using `&key=value`, such as `&repeatX=2`, `&repeatY=2`, `&offsetX=0.25`, `&offsetY=0.1`, `&rotation=45`, `&centerX=0.5`, `&centerY=0.5`, `&wrap=repeat`, `&wrap=clamp`, `&wrap=mirror`, `&wrapX=repeat`, and `&wrapY=clamp`.
+
+See `examples/merged-texture-demo.bm` for a minimal merged-geometry example.
+See `examples/texture-transform-demo.bm` for offset and rotation on a plane texture.
+
+**Parameters:**
+- `$texture` - Texture reference
+
+**Example:**
+```javascript
+$merged = startmerge()
+box(1, 1, 1) > position(-1, 0, 0)
+box(1, 1, 1) > position(1, 0, 0)
+endmerge()
+$merged > texture($crateTex&repeatX=2&repeatY=2&wrap=repeat)
+```
+
+---
+
 ### lightmap($texture, 1.0)
 Applies a light map texture to an object (baked lighting).
 

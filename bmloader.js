@@ -34,6 +34,9 @@ import {
     Sprite,
     PointLight,
     Texture,
+    ClampToEdgeWrapping,
+    MirroredRepeatWrapping,
+    RepeatWrapping,
     AdditiveBlending,
     RingGeometry
 } from "three";
@@ -709,7 +712,7 @@ function hasGeometryOperation(str) {
 function isTransformString(str) {
     const transformOps = [
         'position(', 'rotate(', 'scale(', 'orientation(',
-        'material(', 'lightmap(', 'bumpmap(', 'opacity('
+        'material(', 'texture(', 'lightmap(', 'bumpmap(', 'opacity('
     ];
     
     return typeof str === 'string' && transformOps.some(op => str.includes(op));
@@ -745,6 +748,8 @@ async function applyTransformString(transformStr, targetObj, renderModel, loader
             doOrientationOperation(targetObj, transform, renderModel);
         } else if (transform.startsWith('material(')) {
             await doMaterialOperation(targetObj, transform, renderModel);
+        } else if (transform.startsWith('texture(')) {
+            await doTextureOperation(targetObj, transform, renderModel);
         } else if (transform.startsWith('lightmap(')) {
             await doLightmapOperation(targetObj, transform, renderModel);
         } else if (transform.startsWith('bumpmap(')) {
@@ -1001,6 +1006,12 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
         if (mod.startsWith("material(")) {
             (usingVar ? doMaterialOperation(usingVar, mod, renderModel)
                 : usingObj && doMaterialOperation(usingObj, mod, renderModel));
+            continue;
+        }
+
+        if (mod.startsWith("texture(")) {
+            (usingVar ? await doTextureOperation(usingVar, mod, renderModel)
+                : usingObj && await doTextureOperation(usingObj, mod, renderModel));
             continue;
         }
 
@@ -2262,9 +2273,132 @@ async function loadTexture(txInst, renderModel) {
     const frame = 0;
 
     const tx = await getFrameTexture(txDef, instParts, frame, renderModel);
+
+    if(tx) {
+        applyTextureInstructions(tx, instParts, renderModel);
+    }
+
     tx.colorSpace = SRGBColorSpace;
 
     return tx;
+}
+
+function applyTextureInstructions(texture, instructions, renderModel) {
+    if(!texture || !instructions || instructions.length < 2) {
+        return;
+    }
+
+    let repeatX = null;
+    let repeatY = null;
+    let offsetX = null;
+    let offsetY = null;
+    let rotation = null;
+    let centerX = null;
+    let centerY = null;
+    let wrap = null;
+    let wrapX = null;
+    let wrapY = null;
+
+    for(let i = 1; i < instructions.length; i++) {
+        const parts = instructions[i].split("=");
+
+        if(parts.length !== 2) {
+            continue;
+        }
+
+        const key = parts[0].trim().toLowerCase();
+        const value = getModValue(parts[1].trim(), renderModel);
+
+        if(value === undefined || value === null || value === "") {
+            continue;
+        }
+
+        const numericValue = parseFloat(value);
+
+        if(key === "repeatx" && !isNaN(numericValue)) {
+            repeatX = numericValue;
+        } else if(key === "repeaty" && !isNaN(numericValue)) {
+            repeatY = numericValue;
+        } else if(key === "offsetx" && !isNaN(numericValue)) {
+            offsetX = numericValue;
+        } else if(key === "offsety" && !isNaN(numericValue)) {
+            offsetY = numericValue;
+        } else if(key === "rotation" && !isNaN(numericValue)) {
+            rotation = numericValue;
+        } else if(key === "centerx" && !isNaN(numericValue)) {
+            centerX = numericValue;
+        } else if(key === "centery" && !isNaN(numericValue)) {
+            centerY = numericValue;
+        } else if(key === "wrap") {
+            wrap = value;
+        } else if(key === "wrapx") {
+            wrapX = value;
+        } else if(key === "wrapy") {
+            wrapY = value;
+        }
+    }
+
+    const normalizeWrapMode = (wrapMode) => {
+        const normalized = String(wrapMode).trim().toLowerCase();
+
+        if(normalized === "repeat") {
+            return RepeatWrapping;
+        }
+
+        if(normalized === "mirror" || normalized === "mirrored" || normalized === "mirroredrepeat") {
+            return MirroredRepeatWrapping;
+        }
+
+        if(normalized === "clamp" || normalized === "clamptoedge") {
+            return ClampToEdgeWrapping;
+        }
+
+        return null;
+    };
+
+    const wrapModeX = normalizeWrapMode(wrapX || wrap);
+    const wrapModeY = normalizeWrapMode(wrapY || wrap);
+
+    if(repeatX !== null || repeatY !== null) {
+        texture.wrapS = wrapModeX || RepeatWrapping;
+        texture.wrapT = wrapModeY || RepeatWrapping;
+        texture.repeat.set(repeatX ?? texture.repeat.x, repeatY ?? texture.repeat.y);
+    }
+
+    if(wrapModeX) {
+        texture.wrapS = wrapModeX;
+    }
+
+    if(wrapModeY) {
+        texture.wrapT = wrapModeY;
+    }
+
+    if(offsetX !== null || offsetY !== null) {
+        texture.offset.set(offsetX ?? texture.offset.x, offsetY ?? texture.offset.y);
+    }
+
+    if(centerX !== null || centerY !== null) {
+        texture.center.set(centerX ?? texture.center.x, centerY ?? texture.center.y);
+    }
+
+    if(rotation !== null) {
+        texture.rotation = MathUtils.degToRad(rotation);
+    }
+
+    texture.needsUpdate = true;
+}
+
+function isTextureInstructionModifier(key) {
+    return key === "repeatx"
+        || key === "repeaty"
+        || key === "offsetx"
+        || key === "offsety"
+        || key === "rotation"
+        || key === "centerx"
+    || key === "centery"
+    || key === "wrap"
+    || key === "wrapx"
+    || key === "wrapy";
 }
 
 /**
@@ -2306,6 +2440,14 @@ async function getFrameTexture(txDef, instructions, frame, renderModel) {
         if(instructions.length > 1) {
             for(let i = 1; i < instructions.length; i++) {
                 const parts = instructions[i].split("=");
+
+                if(parts.length !== 2) {
+                    continue;
+                }
+
+                if(isTextureInstructionModifier(parts[0].trim().toLowerCase())) {
+                    continue;
+                }
 
                 const from = getModValue(parts[0],renderModel);
                 const to = getModValue(parts[1],renderModel);
@@ -2958,6 +3100,89 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     return mesh;
 }
 
+function setMaterialProperty(material, property, value) {
+    if(Array.isArray(material)) {
+        for(const mat of material) {
+            if(mat) {
+                mat[property] = value;
+            }
+        }
+    } else if(material) {
+        material[property] = value;
+    }
+}
+
+function rebuildMaterialWithMap(material, texture, textureInstruction) {
+    const rebuildSingleMaterial = (sourceMaterial) => {
+        if(!sourceMaterial) {
+            return sourceMaterial;
+        }
+
+        const matClass = sourceMaterial.constructor || MeshLambertMaterial;
+        const nextMaterial = new matClass();
+
+        nextMaterial.copy(sourceMaterial);
+        nextMaterial.map = texture;
+        nextMaterial.color = sourceMaterial.color ? sourceMaterial.color.clone() : new Color("#ffffff");
+
+        if(sourceMaterial.color && sourceMaterial.color.equals(new Color(DEF_MODEL_COLOR))) {
+            nextMaterial.color = new Color("#ffffff");
+        }
+
+        nextMaterial.name = sourceMaterial.name;
+        nextMaterial.needsUpdate = true;
+
+        if(textureInstruction && textureInstruction.includes("|") && Array.isArray(material)) {
+            return nextMaterial;
+        }
+
+        return nextMaterial;
+    };
+
+    if(Array.isArray(material)) {
+        return material.map(mat => rebuildSingleMaterial(mat));
+    }
+
+    return rebuildSingleMaterial(material);
+}
+
+function markMaterialNeedsUpdate(material) {
+    if(Array.isArray(material)) {
+        for(const mat of material) {
+            if(mat) {
+                mat.needsUpdate = true;
+            }
+        }
+    } else if(material) {
+        material.needsUpdate = true;
+    }
+}
+
+function ensureLightMapUvChannel(object) {
+    const applyUvCopy = (mesh) => {
+        const geometry = mesh?.geometry;
+        const uv = geometry?.attributes?.uv;
+
+        if(!geometry || !uv || !geometry.setAttribute) {
+            return;
+        }
+
+        if(!geometry.attributes.uv1) {
+            geometry.setAttribute("uv1", uv.clone());
+        }
+
+        if(!geometry.attributes.uv2) {
+            geometry.setAttribute("uv2", uv.clone());
+        }
+    };
+
+    applyUvCopy(object);
+
+    if(object?.traverse) {
+        object.traverse(child => applyUvCopy(child));
+    }
+}
+
 async function doLightmapOperation(id, code, renderModel) {
     let obid = id;
 
@@ -2985,8 +3210,10 @@ async function doLightmapOperation(id, code, renderModel) {
     if(textureRef && textureRef.indexOf("$") == 0) {
         const texture = await loadTexture(textureRef, renderModel);
         if(texture) {
-            obid.material.lightMap = texture;
-            obid.material.needsUpdate = true;
+            texture.channel = 1;
+            ensureLightMapUvChannel(obid);
+            setMaterialProperty(obid.material, "lightMap", texture);
+            markMaterialNeedsUpdate(obid.material);
         } else {
             console.warn("Lightmap texture not found:", textureRef);
         }
@@ -2996,10 +3223,43 @@ async function doLightmapOperation(id, code, renderModel) {
         const intensityPart = getModValue(parts[1], renderModel);
 
         if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
-            obid.material.lightMapIntensity = parseFloat(intensityPart);
-            obid.material.needsUpdate = true;
+            setMaterialProperty(obid.material, "lightMapIntensity", parseFloat(intensityPart));
+            markMaterialNeedsUpdate(obid.material);
         }
     }
+}
+
+async function doTextureOperation(id, code, renderModel) {
+    let obid = id;
+
+    if(typeof id == "string" && renderModel.bmDat.variables[id]) {
+        obid = renderModel.bmDat.variables[id];
+    }
+
+    if(!obid || !obid.material) {
+        console.warn("Invalid object for texture operation:", id);
+        return;
+    }
+
+    let raw = code.replace("texture(","");
+    raw = raw.replace(")","");
+
+    const textureRef = getModValue(raw.trim(), renderModel);
+
+    if(!textureRef || textureRef.indexOf("$") !== 0) {
+        console.warn("Texture operation requires a texture reference.");
+        return;
+    }
+
+    const texture = await loadTexture(textureRef, renderModel);
+
+    if(!texture) {
+        console.warn("Texture not found:", textureRef);
+        return;
+    }
+
+    obid.material = rebuildMaterialWithMap(obid.material, texture, textureRef);
+    markMaterialNeedsUpdate(obid.material);
 }
 
 async function doEmissiveOperation(id, code, renderModel) {
@@ -3072,8 +3332,8 @@ async function doBumpmapOperation(id, code, renderModel) {
     if(textureRef && textureRef.indexOf("$") == 0) {
         const texture = await loadTexture(textureRef, renderModel);
         if(texture) {
-            obid.material.bumpMap = texture;
-            obid.material.needsUpdate = true;
+            setMaterialProperty(obid.material, "bumpMap", texture);
+            markMaterialNeedsUpdate(obid.material);
         } else {
             console.warn("Bumpmap texture not found:", textureRef);
         }
@@ -3083,8 +3343,8 @@ async function doBumpmapOperation(id, code, renderModel) {
         const intensityPart = getModValue(parts[1], renderModel);
 
         if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
-            obid.material.bumpMapIntensity = parseFloat(intensityPart);
-            obid.material.needsUpdate = true;
+            setMaterialProperty(obid.material, "bumpScale", parseFloat(intensityPart));
+            markMaterialNeedsUpdate(obid.material);
         }
     }
 }
@@ -3203,15 +3463,17 @@ async function doMaterialOperation(id, code, renderModel) {
     }
 
     if(lightMap) {
-        obid.material.lightMap = lightMap;
+        lightMap.channel = 1;
+        ensureLightMapUvChannel(obid);
+        setMaterialProperty(obid.material, "lightMap", lightMap);
     } else {
-        obid.material.lightMap = null;
+        setMaterialProperty(obid.material, "lightMap", null);
     }
 
     if(bumpMap) {
-        obid.material.bumpMap = bumpMap;
+        setMaterialProperty(obid.material, "bumpMap", bumpMap);
     } else {
-        obid.material.bumpMap = null;
+        setMaterialProperty(obid.material, "bumpMap", null);
     }
 
     if(emissive && emissive.length == 7 && emissive[0] == "#") {
