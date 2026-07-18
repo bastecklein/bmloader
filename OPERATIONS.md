@@ -293,7 +293,7 @@ $copy > usegeo($original) > position(5, 0, 0)
 
 ## Material Operations
 
-### material(color, [shininess], [metalness], [roughness], [lightMap], [bumpMap], [emissive], [emissiveIntensity])
+### material(color, [shininess], [metalness], [roughness], [lightMap], [bumpMap], [emissive], [emissiveIntensity], [sideMode])
 Modifies material properties of an existing object.
 
 **Parameters:**
@@ -305,11 +305,14 @@ Modifies material properties of an existing object.
 - `bumpMap` (optional) - Bump map texture reference
 - `emissive` (optional) - Emissive color (glow color)
 - `emissiveIntensity` (optional) - Emissive intensity (brightness multiplier, default 1)
+- `sideMode` (optional) - Face culling mode: `front` (default), `double`, or `back`
 
 **Example:**
 ```javascript
 $obj > sphere(1, 32, 32) > material(#ff0000, 30, 0.5, 0.2)
 $glowing > box(1, 1, 1) > material(#222222, 0, 0, 0, 0, 0, #ff6600, 3)
+$tube > cylinder(1, 1, 3, 24, #bbbbbb, , , open) > material(#bbbbbb, 0, 0, 0, 0, 0, 0, 1, double)
+$insideOnly > plane(4, 4, #ffffff, $wallTex) > material(#ffffff, 0, 0, 0, 0, 0, 0, 1, back)
 ```
 
 ---

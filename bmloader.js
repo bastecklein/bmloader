@@ -30,6 +30,7 @@ import {
     MeshToonMaterial,
     Color,
     FrontSide,
+    BackSide,
     SpriteMaterial,
     Sprite,
     PointLight,
@@ -2031,6 +2032,28 @@ function doOrientationOperation(id,code,renderModel) {
     }
 }
 
+function getMaterialSideFromMode(sideMode) {
+    if(!sideMode) {
+        return undefined;
+    }
+
+    const normalized = String(sideMode).trim().toLowerCase();
+
+    if(normalized === "double" || normalized === "doubleside" || normalized === "double-sided") {
+        return DoubleSide;
+    }
+
+    if(normalized === "back" || normalized === "backside") {
+        return BackSide;
+    }
+
+    if(normalized === "front" || normalized === "frontside") {
+        return FrontSide;
+    }
+
+    return undefined;
+}
+
 function doRotateOperation(id,code,renderModel) {
 
     let obid = id;
@@ -2159,7 +2182,7 @@ function doVisibleOperation(id, code, renderModel) {
     }
 }
 
-async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthWrite = true, useMaterial = "lambert") {
+async function getTextureMaterial(textureInstruction, renderModel, transparent, withColor = null, depthWrite = true, useMaterial = "lambert", side = FrontSide) {
 
     if(!textureInstruction) {
         return null;
@@ -2175,6 +2198,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
 
         let mapOptions = {
             map: texture,
+            side: side,
             transparent: transparent,
             depthWrite: depthWrite
         };
@@ -2198,7 +2222,7 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
 
         let mapOptions = {
             map: texture,
-            side: DoubleSide,
+            side: side,
             transparent: transparent,
             depthWrite: depthWrite
         };
@@ -2914,7 +2938,7 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
             transparent = true;
         }
 
-        material = await getTextureMaterial(txPart, renderModel, transparent, colPart, depthWrite, useMaterial);
+        material = await getTextureMaterial(txPart, renderModel, transparent, colPart, depthWrite, useMaterial, side);
     }
         
     if(!material) {
@@ -3021,7 +3045,15 @@ async function doEmissiveOperation(id, code, renderModel) {
         obid.material.emissiveIntensity = parseFloat(intensityPart);
     }
 
-    obid.material.needsUpdate = true;
+    if(Array.isArray(obid.material)) {
+        for(const mat of obid.material) {
+            if(mat) {
+                mat.needsUpdate = true;
+            }
+        }
+    } else {
+        obid.material.needsUpdate = true;
+    }
 }
 
 async function doBumpmapOperation(id, code, renderModel) {
@@ -3097,6 +3129,7 @@ async function doMaterialOperation(id, code, renderModel) {
 
     let emissive = undefined;
     let emissiveIntensity = undefined;
+    let sideMode = undefined;
 
     let lightMap = undefined;
     let bumpMap = undefined;
@@ -3155,6 +3188,10 @@ async function doMaterialOperation(id, code, renderModel) {
         emissiveIntensity = getModValue(parts[7], renderModel);
     }
 
+    if(parts.length >= 9) {
+        sideMode = getModValue(parts[8], renderModel);
+    }
+
     if(color && color.length == 7 && color[0] == "#") {
         obid.material.color = new Color(color);
     }
@@ -3191,7 +3228,29 @@ async function doMaterialOperation(id, code, renderModel) {
         obid.material.emissiveIntensity = parseFloat(emissiveIntensity);
     }
 
-    obid.material.needsUpdate = true;
+    const side = getMaterialSideFromMode(sideMode);
+
+    if(side !== undefined) {
+        if(Array.isArray(obid.material)) {
+            for(const mat of obid.material) {
+                if(mat) {
+                    mat.side = side;
+                }
+            }
+        } else {
+            obid.material.side = side;
+        }
+    }
+
+    if(Array.isArray(obid.material)) {
+        for(const mat of obid.material) {
+            if(mat) {
+                mat.needsUpdate = true;
+            }
+        }
+    } else {
+        obid.material.needsUpdate = true;
+    }
 }
 
 export {  BMLoader, BasicModel, ModelTexture, RenderBasicModel };
