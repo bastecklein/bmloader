@@ -1874,7 +1874,14 @@ function createCylinderGeometryWithCaps(radTop, radBottom, height, segs, capMode
         return sideGeometry;
     }
 
-    return mergeGeometries(geometries, false) || sideGeometry;
+    const mergedGeometry = mergeGeometries(geometries, false);
+
+    if(mergedGeometry) {
+        mergedGeometry.computeVertexNormals();
+        return mergedGeometry;
+    }
+
+    return sideGeometry;
 }
 
 function handleGeoTranslate(code, renderModel) {
@@ -2677,20 +2684,34 @@ function addDecalToObject(obj, material, position = { x: 0, y: 0, z: 0 }, orient
 }
 
 function getMaterialClass(matname) {
-    if(matname == "lambert" || matname == "MeshLambertMaterial") {
+    if(matname === undefined || matname === null) {
         return MeshLambertMaterial;
     }
 
-    if(matname == "phong" || matname == "MeshPhongMaterial") {
+    const normalized = String(matname).trim();
+
+    if(normalized.length === 0) {
+        return MeshLambertMaterial;
+    }
+
+    if(normalized == "lambert" || normalized == "MeshLambertMaterial") {
+        return MeshLambertMaterial;
+    }
+
+    if(normalized == "phong" || normalized == "MeshPhongMaterial") {
         return MeshPhongMaterial;
     }
 
-    if(matname == "standard" || matname == "MeshStandardMaterial") {
+    if(normalized == "standard" || normalized == "MeshStandardMaterial") {
         return MeshStandardMaterial;
     }
 
-    if(matname == "toon" || matname == "MeshToonMaterial") {
+    if(normalized == "toon" || normalized == "MeshToonMaterial") {
         return MeshToonMaterial;
+    }
+
+    if(normalized == "basic" || normalized == "MeshBasicMaterial") {
+        return MeshBasicMaterial;
     }
 
     return MeshBasicMaterial;
@@ -2902,6 +2923,7 @@ async function createLatheOperation(code, renderModel, currentGroup, loader) {
         geometry = storedGeometries[geoName];
     } else {
         geometry = new LatheGeometry(points, segments, 0, phiLength);
+        geometry.computeVertexNormals();
         geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
         storedGeometries[geoName] = geometry;
     }
