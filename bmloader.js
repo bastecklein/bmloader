@@ -6,6 +6,7 @@ import {
     Mesh,
     Group,
     MathUtils,
+    Matrix4,
     FileLoader,
     SphereGeometry,
     TorusGeometry,
@@ -53,6 +54,96 @@ const storedImageCanvases = {};
 const storedMaterials = {};
 const loadedRenderModels = {}; // Cache for fully-loaded render models
 const loadedFonts = {}; // Cache for loaded fonts
+
+// Interned (shared, immutable) materials and textures. Anything that mutates one
+// must go through makeMaterialWritable() first so instances never contaminate each other.
+const internedMaterials = new Map();
+const internedTextures = new Map();
+const _matClassIds = new Map();
+
+function getMatClassId(matClass) {
+    let id = _matClassIds.get(matClass);
+
+    if(id === undefined) {
+        id = _matClassIds.size;
+        _matClassIds.set(matClass, id);
+    }
+
+    return id;
+}
+
+/**
+ * Returns a shared material for the given class/options, creating it if needed.
+ * The returned material is flagged as shared and must never be mutated in place.
+ */
+function internMaterial(matClass, options = {}) {
+    const mapKey = options.map ? (options.map.userData.__bmTxKey || options.map.uuid) : "nomap";
+
+    const key = [
+        getMatClassId(matClass),
+        mapKey,
+        options.color === undefined ? "def" : options.color,
+        options.side === undefined ? "def" : options.side,
+        options.transparent ? 1 : 0,
+        options.depthWrite === false ? 0 : 1
+    ].join("|");
+
+    let material = internedMaterials.get(key);
+
+    if(!material) {
+        material = new matClass(options);
+        material.userData.__bmShared = true;
+        internedMaterials.set(key, material);
+    }
+
+    return material;
+}
+
+function unshareMaterial(material) {
+    if(!material || !material.userData.__bmShared) {
+        return material;
+    }
+
+    const copy = material.clone();
+    copy.userData.__bmShared = false;
+
+    return copy;
+}
+
+/**
+ * Copy-on-write: swaps any shared material on the object for a private clone so
+ * it can be safely mutated. Returns the now-writable material (or array).
+ */
+function makeMaterialWritable(obj) {
+    if(!obj || !obj.material) {
+        return null;
+    }
+
+    if(Array.isArray(obj.material)) {
+        obj.material = obj.material.map(mat => unshareMaterial(mat));
+    } else {
+        obj.material = unshareMaterial(obj.material);
+    }
+
+    return obj.material;
+}
+
+/**
+ * Stable signature for a model + its variable overrides, used to key interned textures.
+ * @param {RenderBasicModel} renderModel
+ */
+function getModelOverrideSignature(renderModel) {
+    const bmDat = renderModel.bmDat;
+
+    if(bmDat._overrideSig === undefined || bmDat._overrideSig === null) {
+        const overrides = bmDat.variableOverrides || {};
+        const keys = Object.keys(overrides).sort();
+
+        bmDat._overrideSig = (bmDat.src ? bmDat.src.id : "?") + "_" + keys.map(k => k + ":" + overrides[k]).join("|");
+    }
+
+    return bmDat._overrideSig;
+}
 
 /**
  * Generates a cache key including variable overrides
@@ -115,6 +206,7 @@ class BMLoader extends Loader {
                 }
 
                 loadBM(modelDat, null, scope).then(function(renderModel) {
+                    renderModel.bmDat.cacheKey = cacheKey;
                     // Cache the first fully-loaded model for future cloning
                     if(!loadedRenderModels[cacheKey]) {
                         loadedRenderModels[cacheKey] = renderModel;
@@ -147,6 +239,7 @@ class BMLoader extends Loader {
                 }
 
                 loadBM(modelDat, url, scope).then(function(renderModel) {
+                    renderModel.bmDat.cacheKey = cacheKey;
                     // Cache with override-specific key for future cloning
                     if(!loadedRenderModels[cacheKey]) {
                         loadedRenderModels[cacheKey] = renderModel;
@@ -180,6 +273,7 @@ class BMLoader extends Loader {
             }
             
             loadBM(remoteModels[url], options, scope).then(function(renderModel) {
+                renderModel.bmDat.cacheKey = cacheKey;
                 // Cache with override-specific key for future cloning
                 if(!loadedRenderModels[cacheKey]) {
                     loadedRenderModels[cacheKey] = renderModel;
@@ -204,6 +298,7 @@ class BMLoader extends Loader {
             const cacheKey = getCacheKeyWithOverrides(url, options?.variables);
 
             loadBM(modelDat, options, scope).then(function(renderModel) {
+                renderModel.bmDat.cacheKey = cacheKey;
                 // Cache with override-specific key for future cloning
                 if(!loadedRenderModels[cacheKey]) {
                     loadedRenderModels[cacheKey] = renderModel;
@@ -259,6 +354,9 @@ class RenderBasicModelProperties {
         this.lastAnimation = null; // Last animation played
         this.defaultState = {}; // Default state of the model
         this.loaderRef = null; // Reference to the loader instance
+        this.cacheKey = null; // Loader cache key, shared by all clones of this template
+        this._overrideSig = null; // Lazily built signature of src id + variable overrides
+        this.mergeGroups = null; // Reversible static-geometry merges, see finalizeRenderModel
     }
 }
 
@@ -295,7 +393,57 @@ class RenderBasicModel extends Group {
     }
 
     reset() {
-        resetRenderModel(this);
+        return resetRenderModel(this);
+    }
+
+    /**
+     * Returns the live object for a model variable, undoing any static merge it takes
+     * part in first so the caller can safely move, hide or restyle it.
+     * @param {string} name - Variable name, with or without the leading $
+     * @return {*} The variable's value
+     */
+    getPart(name) {
+        const key = (typeof name === "string" && name.startsWith("$")) ? name.substring(1) : name;
+        const value = this.bmDat.variables[key];
+
+        if(value && value.isObject3D) {
+            unmergeContaining(this, value);
+        }
+
+        return value;
+    }
+
+    /**
+     * Overrides a model variable and rebuilds the model from its script, since a
+     * variable change can alter geometry and not just appearance.
+     * @param {string} name - Variable name, with or without the leading $
+     * @param {*} value - New value
+     */
+    setVariable(name, value) {
+        const key = (typeof name === "string" && name.startsWith("$")) ? name.substring(1) : name;
+
+        this.bmDat.variableOverrides[key] = value;
+        this.bmDat._overrideSig = null;
+
+        this.clearCaches();
+
+        return resetRenderModel(this);
+    }
+
+    /**
+     * Undoes every static merge, restoring the model to individually addressable parts.
+     * Use when something outside the loader has changed the model in an unknown way.
+     */
+    invalidate() {
+        const mergeGroups = this.bmDat.mergeGroups;
+
+        if(!mergeGroups) {
+            return;
+        }
+
+        for(let i = 0; i < mergeGroups.length; i++) {
+            unmergeGroup(this, i);
+        }
     }
 
     saveState() {
@@ -477,8 +625,8 @@ function doAnimate(model, inst, delta) {
 
                 getTextureMaterial(rawVal, model, ob.material.transparent, undefined, ob.material.depthWrite, ob.material.type).then(function(mat) {
                     if(mat) {
+                        // Swapping the reference, not mutating - no needsUpdate required
                         ob.material = mat;
-                        ob.material.needsUpdate = true;
                     } else {
                         console.warn("Texture not found for:", rawVal);
                     }
@@ -528,6 +676,8 @@ function doAnimate(model, inst, delta) {
                 return;
             }
 
+            makeMaterialWritable(ob);
+
             const cur = ob.material.emissiveIntensity || 0;
             
             if(Math.abs(cur - target) < 0.01) {
@@ -558,6 +708,8 @@ function doAnimate(model, inst, delta) {
                 console.warn("Invalid opacity target value:", tgtVal);
                 return;
             }
+
+            makeMaterialWritable(ob);
 
             const cur = ob.material.opacity || 1;
             
@@ -684,8 +836,297 @@ async function loadBM(modelData, options, loader) {
     }
 
     renderModel.saveState();
+    finalizeRenderModel(renderModel);
 
     return renderModel;
+}
+
+/**
+ * Marks every node that no animation targets as rigid (matrixAutoUpdate off) after
+ * baking its local matrix once, then merges the rigid meshes into as few draw calls
+ * as their materials allow. The merge is reversible - see getPart()/invalidate().
+ * @param {RenderBasicModel} renderModel
+ */
+function finalizeRenderModel(renderModel) {
+    const animated = collectAnimationTargets(renderModel);
+
+    renderModel.traverse(function(node) {
+        if(node === renderModel) {
+            return;
+        }
+
+        node.updateMatrix();
+        node.matrixAutoUpdate = animated.has(node);
+    });
+
+    // A clone already carries the merged meshes and hidden sources, so just re-index them
+    if(adoptExistingMergeGroups(renderModel)) {
+        return;
+    }
+
+    buildMergeGroups(renderModel, collectDynamicNodes(renderModel, animated));
+}
+
+/**
+ * Nodes an animation directly moves. Only these need per-frame matrix recomposition.
+ */
+function collectAnimationTargets(renderModel) {
+    const targets = new Set();
+
+    for(const aniName in renderModel.bmDat.animations) {
+        const animationSet = renderModel.bmDat.animations[aniName];
+
+        if(!Array.isArray(animationSet)) {
+            continue;
+        }
+
+        for(const inst of animationSet) {
+            if(!inst || !inst.target) {
+                continue;
+            }
+
+            const ob = renderModel.bmDat.variables[inst.target];
+
+            if(ob && ob.isObject3D) {
+                targets.add(ob);
+            }
+        }
+    }
+
+    return targets;
+}
+
+/**
+ * Everything an animation could move: the targets themselves, whatever they carry
+ * along (descendants) and whatever moves them (ancestors). None of it may be merged.
+ */
+function collectDynamicNodes(renderModel, targets) {
+    const dynamic = new Set();
+
+    for(const target of targets) {
+        target.traverse(node => dynamic.add(node));
+
+        let parent = target.parent;
+
+        while(parent && parent !== renderModel) {
+            dynamic.add(parent);
+            parent = parent.parent;
+        }
+    }
+
+    return dynamic;
+}
+
+const _mergeMatrix = new Matrix4();
+const _invRootMatrix = new Matrix4();
+
+// Three's raycaster ignores `visible`, so merge sources need picking silenced explicitly
+function noopRaycast() {}
+
+function getGeometryLayoutKey(geometry) {
+    return Object.keys(geometry.attributes).sort().join(",") + "|" + (geometry.index ? "i" : "n");
+}
+
+/**
+ * Bakes rigid meshes into one merged mesh per (material, attribute layout) pair.
+ * Sources stay in the hierarchy but hidden, so the merge can be undone at any time
+ * and so clones pick both halves up for free.
+ */
+function buildMergeGroups(renderModel, dynamic) {
+    renderModel.updateMatrixWorld(true);
+    _invRootMatrix.copy(renderModel.matrixWorld).invert();
+
+    const byMaterial = new Map();
+
+    renderModel.traverse(function(node) {
+        if(node === renderModel || !node.isMesh || dynamic.has(node)) {
+            return;
+        }
+
+        // Hidden parts are authored intent, and multi-material meshes carry draw groups
+        if(!node.visible || !node.geometry || Array.isArray(node.material) || !node.material) {
+            return;
+        }
+
+        if(node.userData.__bmNoMerge || node.userData.__bmMergeGroup !== undefined) {
+            return;
+        }
+
+        let byLayout = byMaterial.get(node.material);
+
+        if(!byLayout) {
+            byLayout = new Map();
+            byMaterial.set(node.material, byLayout);
+        }
+
+        const layoutKey = getGeometryLayoutKey(node.geometry);
+        let list = byLayout.get(layoutKey);
+
+        if(!list) {
+            list = [];
+            byLayout.set(layoutKey, list);
+        }
+
+        list.push(node);
+    });
+
+    const mergeGroups = [];
+
+    for(const [material, byLayout] of byMaterial) {
+        for(const list of byLayout.values()) {
+
+            if(list.length < 2) {
+                continue;
+            }
+
+            const geometries = [];
+
+            for(const mesh of list) {
+                const geo = mesh.geometry.clone();
+
+                _mergeMatrix.multiplyMatrices(_invRootMatrix, mesh.matrixWorld);
+                geo.applyMatrix4(_mergeMatrix);
+
+                geometries.push(geo);
+            }
+
+            let mergedGeometry = null;
+
+            try {
+                mergedGeometry = mergeGeometries(geometries, false);
+            } catch(e) {
+                console.warn("BM static merge failed, leaving parts separate:", e);
+            }
+
+            for(const geo of geometries) {
+                geo.dispose();
+            }
+
+            if(!mergedGeometry) {
+                continue;
+            }
+
+            const index = mergeGroups.length;
+            const mergedMesh = new Mesh(mergedGeometry, material);
+
+            mergedMesh.matrixAutoUpdate = false;
+            mergedMesh.updateMatrix();
+            mergedMesh.userData.__bmMergeGroup = index;
+
+            for(const mesh of list) {
+                mesh.visible = false;
+                mesh.raycast = noopRaycast;
+                mesh.userData.__bmMergeSource = index;
+            }
+
+            renderModel.add(mergedMesh);
+            mergeGroups.push({ merged: mergedMesh, sources: list, active: true });
+        }
+    }
+
+    renderModel.bmDat.mergeGroups = mergeGroups;
+}
+
+/**
+ * Rebuilds the merge group index from userData markers already present in the graph.
+ * @return {boolean} True if this model was already merged.
+ */
+function adoptExistingMergeGroups(renderModel) {
+    const mergedNodes = new Map();
+    const sourceNodes = new Map();
+
+    renderModel.traverse(function(node) {
+        const groupIndex = node.userData.__bmMergeGroup;
+
+        if(groupIndex !== undefined) {
+            mergedNodes.set(groupIndex, node);
+        }
+
+        const sourceIndex = node.userData.__bmMergeSource;
+
+        if(sourceIndex !== undefined) {
+            let list = sourceNodes.get(sourceIndex);
+
+            if(!list) {
+                list = [];
+                sourceNodes.set(sourceIndex, list);
+            }
+
+            list.push(node);
+        }
+    });
+
+    if(mergedNodes.size === 0) {
+        return false;
+    }
+
+    const mergeGroups = [];
+
+    for(const [index, mesh] of mergedNodes) {
+        const sources = sourceNodes.get(index) || [];
+        const active = mesh.visible;
+
+        if(active) {
+            for(const source of sources) {
+                source.raycast = noopRaycast;
+            }
+        }
+
+        mergeGroups[index] = {
+            merged: mesh,
+            sources: sources,
+            active: active
+        };
+    }
+
+    renderModel.bmDat.mergeGroups = mergeGroups;
+
+    return true;
+}
+
+/**
+ * Restores the individual meshes of a merged group so they can be manipulated again.
+ */
+function unmergeGroup(renderModel, index) {
+    const mergeGroups = renderModel.bmDat.mergeGroups;
+
+    if(!mergeGroups || !mergeGroups[index] || !mergeGroups[index].active) {
+        return;
+    }
+
+    const group = mergeGroups[index];
+
+    group.merged.visible = false;
+
+    for(const source of group.sources) {
+        source.visible = true;
+        delete source.raycast;
+    }
+
+    group.active = false;
+}
+
+/**
+ * Un-merges every group that contributed geometry from the given node or its subtree.
+ */
+function unmergeContaining(renderModel, node) {
+    if(!renderModel.bmDat.mergeGroups || !node || !node.isObject3D) {
+        return;
+    }
+
+    const indices = new Set();
+
+    node.traverse(function(child) {
+        const index = child.userData.__bmMergeSource;
+
+        if(index !== undefined) {
+            indices.add(index);
+        }
+    });
+
+    for(const index of indices) {
+        unmergeGroup(renderModel, index);
+    }
 }
 
 /**
@@ -927,7 +1368,7 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader)
                 
                 // Create new mesh with shared geometry and specified material
                 const matClass = getMaterialClass(useMaterial);
-                const material = new matClass({ color: color });
+                const material = internMaterial(matClass, { color: color });
                 usingObj = new Mesh(sourceObj.geometry, material);
                 
                 // Add to scene or current group
@@ -1190,7 +1631,7 @@ function createMergedGeometry(meshList) {
     
     // Check if this exact merge already exists
     if (storedGeometries[geoHash]) {
-        const defaultMaterial = new MeshLambertMaterial({ color: DEF_MODEL_COLOR });
+        const defaultMaterial = internMaterial(MeshLambertMaterial, { color: DEF_MODEL_COLOR });
         return new Mesh(storedGeometries[geoHash], defaultMaterial);
     }
 
@@ -1224,7 +1665,7 @@ function createMergedGeometry(meshList) {
     storedGeometries[geoHash] = mergedGeometry;
     
     // Create mesh with default material (user can override with material() operation)
-    const defaultMaterial = new MeshLambertMaterial({ color: DEF_MODEL_COLOR });
+    const defaultMaterial = internMaterial(MeshLambertMaterial, { color: DEF_MODEL_COLOR });
     const mergedMesh = new Mesh(mergedGeometry, defaultMaterial);
     
     return mergedMesh;
@@ -2102,17 +2543,16 @@ function doOpacityOperation(id, code, renderModel) {
     }
 
     if(obid.material) {
+        makeMaterialWritable(obid);
+
         if(Array.isArray(obid.material)) {
-            // Clone each material in the array to avoid affecting other objects
-            obid.material = obid.material.map(mat => {
-                const clonedMat = mat.clone();
-                clonedMat.opacity = opVal;
-                clonedMat.transparent = true;
-                return clonedMat;
-            });
+            for(const mat of obid.material) {
+                if(mat) {
+                    mat.opacity = opVal;
+                    mat.transparent = true;
+                }
+            }
         } else {
-            // Clone the material to avoid affecting other objects
-            obid.material = obid.material.clone();
             obid.material.opacity = opVal;
             obid.material.transparent = true;
         }
@@ -2182,9 +2622,6 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
 
     if(txInst.length == 1) {
         const texture = await loadTexture(txInst[0], renderModel);
-        
-        // DO NOT CACHE MATERIALS - creates color mixing bugs when multiple instances share materials
-        // Materials are lightweight - caching provides minimal benefit but causes issues
 
         let mapOptions = {
             map: texture,
@@ -2198,17 +2635,14 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
         }
 
         const matClass = getMaterialClass(useMaterial);
-        const material = new matClass(mapOptions);
 
-        return material;
+        return internMaterial(matClass, mapOptions);
     }
 
     let mapping = [];
 
     for(let i = 0; i < txInst.length; i++) {
         const texture = await loadTexture(txInst[i], renderModel);
-        
-        // DO NOT CACHE MATERIALS - creates color mixing bugs when multiple instances share materials
 
         let mapOptions = {
             map: texture,
@@ -2222,9 +2656,8 @@ async function getTextureMaterial(textureInstruction, renderModel, transparent, 
         }
 
         const matClass = getMaterialClass(useMaterial);
-        const material = new matClass(mapOptions);
-        
-        mapping.push(material);
+
+        mapping.push(internMaterial(matClass, mapOptions));
     }
     
     if(mapping.length == 0) {
@@ -2246,6 +2679,13 @@ async function loadTexture(txInst, renderModel) {
 
     if(instParts.length == 0 || instParts[0].trim().length == 0) {
         return null;
+    }
+
+    const txCacheKey = getModelOverrideSignature(renderModel) + "::" + txInst;
+    const cachedTexture = internedTextures.get(txCacheKey);
+
+    if(cachedTexture) {
+        return cachedTexture;
     }
 
     const txNameRaw = instParts[0].trim();
@@ -2274,11 +2714,16 @@ async function loadTexture(txInst, renderModel) {
 
     const tx = await getFrameTexture(txDef, instParts, frame, renderModel);
 
-    if(tx) {
-        applyTextureInstructions(tx, instParts, renderModel);
+    if(!tx) {
+        return null;
     }
 
+    applyTextureInstructions(tx, instParts, renderModel);
+
     tx.colorSpace = SRGBColorSpace;
+    tx.userData.__bmTxKey = txCacheKey;
+
+    internedTextures.set(txCacheKey, tx);
 
     return tx;
 }
@@ -2613,6 +3058,10 @@ function restoreModelState(renderModel, ob) {
         ob.rotation.set(stateOb.rotation.x, stateOb.rotation.y, stateOb.rotation.z);
         ob.position.set(stateOb.position.x, stateOb.position.y, stateOb.position.z);
         ob.scale.set(stateOb.scale.x, stateOb.scale.y, stateOb.scale.z);
+
+        if(!ob.matrixAutoUpdate) {
+            ob.updateMatrix();
+        }
     }
 
     if(ob.children && ob.children.length > 0) {
@@ -2637,18 +3086,20 @@ async function resetRenderModel(renderModel) {
 
     // Reset data
     renderModel.bmDat.variables = {};
-    renderModel.bmDat.variableOverrides = {};
     renderModel.bmDat.animations = {};
+    renderModel.bmDat.mergeGroups = null;
 
     const currentGroup = { grp: null };
     for (const line of renderModel.bmDat._scriptLines) {
-        await negotiateInstructionLine(line, renderModel, currentGroup);
+        await negotiateInstructionLine(line, renderModel, currentGroup, renderModel.bmDat.loaderRef);
     }
 
     if (currentGroup.grp) {
         renderModel.add(currentGroup.grp);
         currentGroup.grp = null;
     }
+
+    finalizeRenderModel(renderModel);
 }
 
 /**
@@ -2670,6 +3121,7 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
     // Copy model data properties (but not variables yet - we'll rebuild those)
     clone.bmDat.variables = {}; // Will be populated during cloning
     clone.bmDat.geoTranslate = { ...sourceModel.bmDat.geoTranslate };
+    clone.bmDat.cacheKey = sourceModel.bmDat.cacheKey;
     clone.bmDat._scriptLines = sourceModel.bmDat._scriptLines ? [...sourceModel.bmDat._scriptLines] : null;
     
     // Apply variable overrides if provided
@@ -2704,16 +3156,19 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
             let clonedChild;
             
             if (child instanceof Mesh) {
-                // Create new mesh with SHARED geometry but CLONED material
-                // Materials must be cloned to prevent color contamination between instances
-                const clonedMaterial = Array.isArray(child.material) 
-                    ? child.material.map(mat => mat.clone())
-                    : child.material.clone();
+                // Share geometry always, and share interned materials too; only
+                // model-specific (already unshared) materials get cloned per instance.
+                const cloneMaterial = (mat) => (mat && mat.userData.__bmShared) ? mat : mat.clone();
+
+                const clonedMaterial = Array.isArray(child.material)
+                    ? child.material.map(cloneMaterial)
+                    : cloneMaterial(child.material);
                     
                 clonedChild = new Mesh(child.geometry, clonedMaterial);
                 clonedChild.position.copy(child.position);
                 clonedChild.rotation.copy(child.rotation);
                 clonedChild.scale.copy(child.scale);
+                clonedChild.userData = { ...child.userData };
                 
                 // Copy custom properties
                 if (child.name) clonedChild.name = child.name;
@@ -2744,6 +3199,7 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
                 clonedChild.position.copy(child.position);
                 clonedChild.rotation.copy(child.rotation);
                 clonedChild.scale.copy(child.scale);
+                clonedChild.userData = { ...child.userData };
                 
                 if (child.name) clonedChild.name = child.name;
             } else {
@@ -2782,6 +3238,7 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
     
     // Save default state for animations
     clone.saveState();
+    finalizeRenderModel(clone);
     
     return clone;
 }
@@ -2913,10 +3370,17 @@ function createFakeLightOperation(code, renderModel, currentGroup, loader) {
     const textureKey = `fakelight_${color}_${intensity}`;
     
     let texture = null;
+
     if(storedImageCanvases[textureKey]) {
         // Use cached texture
-        texture = new Texture(storedImageCanvases[textureKey]);
-        texture.needsUpdate = true;
+        texture = internedTextures.get(textureKey);
+
+        if(!texture) {
+            texture = new Texture(storedImageCanvases[textureKey]);
+            texture.userData.__bmTxKey = textureKey;
+            texture.needsUpdate = true;
+            internedTextures.set(textureKey, texture);
+        }
     } else {
         // Generate radial gradient texture
         const canvas = document.createElement('canvas');
@@ -2948,18 +3412,27 @@ function createFakeLightOperation(code, renderModel, currentGroup, loader) {
         storedImageCanvases[textureKey] = canvas;
         
         texture = new Texture(canvas);
+        texture.userData.__bmTxKey = textureKey;
         texture.needsUpdate = true;
+        internedTextures.set(textureKey, texture);
     }
     
     // Create plane geometry for the sprite
     //const geometry = new PlaneGeometry(size, size);
     
     // Create material with additive blending for glow effect
-    const material = new SpriteMaterial({
-        map: texture,
-        transparent: true,
-        blending: AdditiveBlending
-    });
+    const matKey = "fakelightmat_" + textureKey;
+    let material = internedMaterials.get(matKey);
+
+    if(!material) {
+        material = new SpriteMaterial({
+            map: texture,
+            transparent: true,
+            blending: AdditiveBlending
+        });
+        material.userData.__bmShared = true;
+        internedMaterials.set(matKey, material);
+    }
 
     const mesh = new Sprite(material);
     
@@ -3080,10 +3553,8 @@ async function setupNewMaterial(renderModel, geometry, currentGroup, colPart, tx
     if(!material) {
         const matClass = getMaterialClass(useMaterial);
         const color = (colPart && colPart.length == 7 && colPart[0] == "#") ? colPart : DEF_MODEL_COLOR;
-        
-        // DO NOT CACHE MATERIALS - creates color mixing bugs when multiple instances share materials
-        // Each mesh should have its own material instance to prevent cross-contamination
-        material = new matClass({
+
+        material = internMaterial(matClass, {
             color: color,
             side: side
         });
@@ -3130,6 +3601,7 @@ function rebuildMaterialWithMap(material, texture, textureInstruction) {
         }
 
         nextMaterial.name = sourceMaterial.name;
+        nextMaterial.userData.__bmShared = false;
         nextMaterial.needsUpdate = true;
 
         if(textureInstruction && textureInstruction.includes("|") && Array.isArray(material)) {
@@ -3212,6 +3684,7 @@ async function doLightmapOperation(id, code, renderModel) {
         if(texture) {
             texture.channel = 1;
             ensureLightMapUvChannel(obid);
+            makeMaterialWritable(obid);
             setMaterialProperty(obid.material, "lightMap", texture);
             markMaterialNeedsUpdate(obid.material);
         } else {
@@ -3223,6 +3696,7 @@ async function doLightmapOperation(id, code, renderModel) {
         const intensityPart = getModValue(parts[1], renderModel);
 
         if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
+            makeMaterialWritable(obid);
             setMaterialProperty(obid.material, "lightMapIntensity", parseFloat(intensityPart));
             markMaterialNeedsUpdate(obid.material);
         }
@@ -3291,6 +3765,8 @@ async function doEmissiveOperation(id, code, renderModel) {
         intensityPart = getModValue(parts[1], renderModel);
     }
 
+    makeMaterialWritable(obid);
+
     if(colorPart && colorPart.length == 7 && colorPart[0] == "#") {
         obid.material.emissive = new Color(colorPart);
     }
@@ -3332,6 +3808,7 @@ async function doBumpmapOperation(id, code, renderModel) {
     if(textureRef && textureRef.indexOf("$") == 0) {
         const texture = await loadTexture(textureRef, renderModel);
         if(texture) {
+            makeMaterialWritable(obid);
             setMaterialProperty(obid.material, "bumpMap", texture);
             markMaterialNeedsUpdate(obid.material);
         } else {
@@ -3343,6 +3820,7 @@ async function doBumpmapOperation(id, code, renderModel) {
         const intensityPart = getModValue(parts[1], renderModel);
 
         if(intensityPart !== undefined && !isNaN(parseFloat(intensityPart))) {
+            makeMaterialWritable(obid);
             setMaterialProperty(obid.material, "bumpScale", parseFloat(intensityPart));
             markMaterialNeedsUpdate(obid.material);
         }
@@ -3365,12 +3843,8 @@ async function doMaterialOperation(id, code, renderModel) {
         return;
     }
 
-    // Clone the material to avoid affecting other objects that might share it
-    if(Array.isArray(obid.material)) {
-        obid.material = obid.material.map(mat => mat.clone());
-    } else {
-        obid.material = obid.material.clone();
-    }
+    // Swap in a private copy so other objects sharing this material are unaffected
+    makeMaterialWritable(obid);
 
     let raw = code.replace("material(","");
     raw = raw.replace(")","");
