@@ -418,6 +418,7 @@ class RenderBasicModel extends Group {
      * variable change can alter geometry and not just appearance.
      * @param {string} name - Variable name, with or without the leading $
      * @param {*} value - New value
+        * @return {Promise<void>} Resolves when the model has finished rebuilding
      */
     setVariable(name, value) {
         const key = (typeof name === "string" && name.startsWith("$")) ? name.substring(1) : name;
@@ -1206,16 +1207,18 @@ async function applyTransformString(transformStr, targetObj, renderModel, loader
  * @param {RenderBasicModel} renderModel The model to modify
  * @param {Object} currentGroup The current group context for grouping operations
  * @param {BMLoader} loader The loader instance for texture loading
+ * @param {boolean} recordInstruction Whether to retain the line for future rebuilds
  */
-async function negotiateInstructionLine(line, renderModel, currentGroup, loader) {
+async function negotiateInstructionLine(line, renderModel, currentGroup, loader, recordInstruction = true) {
     if (line.trim().startsWith("//") || !line.trim()) return;
 
-    // Store original instruction
-    if (!renderModel.bmDat._scriptLines) {
-        renderModel.bmDat._scriptLines = [];
-    }
+    if (recordInstruction) {
+        if (!renderModel.bmDat._scriptLines) {
+            renderModel.bmDat._scriptLines = [];
+        }
 
-    renderModel.bmDat._scriptLines.push(line);
+        renderModel.bmDat._scriptLines.push(line);
+    }
 
     let usingVar = null;
     let usingObj = null;
@@ -3087,11 +3090,18 @@ async function resetRenderModel(renderModel) {
     // Reset data
     renderModel.bmDat.variables = {};
     renderModel.bmDat.animations = {};
+    renderModel.bmDat.defaultState = {};
     renderModel.bmDat.mergeGroups = null;
 
-    const currentGroup = { grp: null };
+    const currentGroup = {
+        grp: null,
+        merging: false,
+        mergeList: [],
+        mergeName: null
+    };
+
     for (const line of renderModel.bmDat._scriptLines) {
-        await negotiateInstructionLine(line, renderModel, currentGroup, renderModel.bmDat.loaderRef);
+        await negotiateInstructionLine(line, renderModel, currentGroup, renderModel.bmDat.loaderRef, false);
     }
 
     if (currentGroup.grp) {
@@ -3099,6 +3109,7 @@ async function resetRenderModel(renderModel) {
         currentGroup.grp = null;
     }
 
+    renderModel.saveState();
     finalizeRenderModel(renderModel);
 }
 
