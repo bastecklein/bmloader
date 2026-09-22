@@ -269,10 +269,13 @@ $original > sphere(1, 32, 32, #ff0000) > position(0, 0, 0)
 $copy1 > clone($original) > position(3, 0, 0)
 $copy2 > clone($original) > position(-3, 0, 0) > scale(1.5, 1.5, 1.5)
 
-// Clone groups
+// Clone groups — build the parts first, then parent them into the group.
+// See "Adding Objects" for why the direction matters.
 $tree > empty()
-$trunk > cylinder(0.2, 0.2, 2, 8, #8B4513) > add($tree)
-$leaves > sphere(1, 16, 16, #228B22) > position(0, 2, 0) > add($tree)
+$trunk > cylinder(0.2, 0.2, 2, 8, #8B4513)
+$leaves > sphere(1, 16, 16, #228B22) > position(0, 2, 0)
+$tree > add($trunk)
+$tree > add($leaves)
 
 $forest1 > clone($tree) > position(5, 0, 0)
 $forest2 > clone($tree) > position(-5, 0, 5)
@@ -642,6 +645,83 @@ $light > sphere(0.5, 16, 16) > material(#222222, 0, 0, 0, 0, 0, #ff6600, 3) > po
 
 ---
 
+### hemispherelight([skyColor], [groundColor], [intensity])
+A sky/ground light pair: `skyColor` colours whatever faces up, `groundColor` whatever faces
+down, and the two blend across the surface normal.
+
+**Parameters:**
+- `skyColor` (optional) - Default: `#ffffff`
+- `groundColor` (optional) - Default: `#444444`
+- `intensity` (optional) - Default: 1
+
+**Example:**
+```javascript
+$sky > hemispherelight(#bfd9ff, #1a120b, 0.85)
+```
+
+Far cheaper than `pointlight()` — it is one blend per pixel with no positional falloff — so
+it is the sensible broad fill light for a large surface, where a point light would be paying
+for falloff it does not need.
+
+---
+
+### directionallight([color], [intensity], [dirX], [dirY], [dirZ])
+A sun-like light. `dirX, dirY, dirZ` is the direction the light **travels** — the default
+`(0, -1, 0)` shines straight down.
+
+**Parameters:**
+- `color` (optional) - Default: `#ffffff`
+- `intensity` (optional) - Default: 1
+- `dirX`, `dirY`, `dirZ` (optional) - Default: `0, -1, 0`
+
+**Example:**
+```javascript
+$sun > directionallight(#fff1dd, 1.2, 0, 0.6, -0.8) > position(4, 9, 3)
+```
+
+> **⚠️ Do not "simplify" the aim into a target position.** A three.js `DirectionalLight`
+> aims at its `target`, and three.js only refreshes the world matrix of a target that is
+> **in the scene graph**. A target that is merely positioned is silently ignored and the
+> light aims at the world **origin** — and because `THREE`'s own `.clone()` copies
+> `target.position`, the object inspects as correct and renders as wrong.
+>
+> This is why `directionallight()` parents its target *into the light itself*: the offset
+> then IS the aim vector, and as a child it is always in the graph. If you write a new
+> light operation, do the same — and test the **effective aim** after
+> `updateMatrixWorld()`, never `light.target.position`, which passes on a broken light.
+
+`directionallight()` does not cast shadows (`castShadow` stays `false`). Shadow budget
+belongs to the host engine, not to a model.
+
+---
+
+### fog([color], [near], [far])
+Declares scene fog.
+
+**Parameters:**
+- `color` (optional) - Default: `#ffffff`
+- `near` (optional) - Default: 1
+- `far` (optional) - Default: 100
+
+**Example:**
+```javascript
+fog(#c8d8ff, 20, 140)
+```
+
+Unlike every other operation here, **fog is not an object**. It is a `Scene` property
+(`scene.fog`) and this loader never holds a `Scene` reference, so there is nothing to parent
+it to and nothing for the clone to carry. It is recorded as data instead:
+
+```javascript
+const fog = model.bmDat.fog; // { color, near, far }, or null
+scene.fog = fog ? new Fog(fog.color, fog.near, fog.far) : null;
+```
+
+Use it standalone — it has no position, so a transform chained after it does nothing.
+Fog is atmosphere rather than lighting, so it is still recorded when `enableLights: false`.
+
+---
+
 ## Advanced Operations
 
 ### Variables
@@ -654,15 +734,145 @@ $myBox = box(1, $height, 1, #ff0000)
 $myBox > position(0, 0, 0)
 ```
 
+Variables resolve **top-down**, and a name that is not assigned yet is not an
+error.
+
+> **Warning:** a variable used before it is declared evaluates to nothing, and the
+> geometry it sizes comes out wrong rather than failing.
+>
+> A bare use gives a zero-sized object:
+>
+> ```javascript
+> $box > box($width, 1, 1, #ff0000)   // built zero wide
+> // ...
+> $width = 6
+> ```
+>
+> That is the harmless version, because a zero-sized object is visibly missing.
+> Inside an expression it is worse: the missing term contributes `0` and the result
+> still looks plausible.
+>
+> ```javascript
+> $span = $front + $length + $back   // 2 + 0 + 2, not 2 + 30 + 2
+> // ...
+> $length = 30
+> ```
+>
+> Declare the values a model is *parameterised by* at the top of the script, above
+> everything that reads them.
+
+---
+
+### Derived Variables
+A variable assigned an expression keeps that expression as **text**, and evaluates
+it wherever it is used.
+
+```javascript
+$width = 2.2
+$half = $width / 2
+$left > box($half, 1, 1, #ff0000)   // evaluates to 1.1
+```
+
+That is what lets one override carry a long way. A parameter read by a derived
+variable, read by a position, all move together:
+
+```javascript
+$gutterX = $laneWidth / 2 + $gutterWidth / 2
+$gutterL > box($gutterWidth, 0.16, 30, #232c3d, 0, standard) > position(-$gutterX, -0.12, 0)
+```
+
+Loading that with `{ variables: { laneWidth: 4.4 } }` moves the gutter out with the
+boards, because `$gutterX` is re-evaluated against the override rather than baked
+in at assignment.
+
+> **Note:** a derived variable is not readable as a number. `getPart('half')`
+> returns the string `"$width/2"`, so `Number()` of it is `NaN`. Only a literal is
+> readable back — write a value another system has to READ as a literal, not as a
+> derivation.
+
+> **Warning:** an expression is evaluated with `$` stripped, so a variable whose
+> name matches a built-in of the expression evaluator is **shadowed by it**. The
+> arithmetic then returns nonsense with no error:
+>
+> ```javascript
+> $length = 3
+> $other = 10
+> $span = $length + $other   // 3, not 13 — `length` is the evaluator's own length()
+> ```
+>
+> This affects 53 names: `length`, `abs`, `ceil`, `floor`, `round`, `trunc`, `sign`,
+> `sqrt`, `cbrt`, `exp`, `log`, `log2`, `log10`, `lg`, `ln`, `log1p`, `expm1`, `min`,
+> `max`, `pow`, `random`, `fac`, `gamma`, `hypot`, `pyt`, `roundTo`, `atan2`, `sin`,
+> `cos`, `tan`, `asin`, `acos`, `atan`, `sinh`, `cosh`, `tanh`, `asinh`, `acosh`,
+> `atanh`, `if`, `in`, `and`, `or`, `not`, `map`, `filter`, `fold`, `join`,
+> `indexOf`, `E`, `PI`, `true`, `false`.
+>
+> A name that merely contains one is fine — `laneLength` and `lengthOfLane` are both
+> safe — so the collision is exact-match, and easy to miss. It also only fires inside
+> an expression: the same variable used as a bare argument resolves normally, which
+> is why trying it once is not proof that it works.
+
 ---
 
 ### Variable Overrides
-Override variable values when cloning models (via loader options).
+Override a model's variables at load time by passing a `variables` object in the
+loader options. Values are applied before the script is evaluated, so an override
+can change geometry as well as appearance.
 
 **Example:**
 ```javascript
-const model1 = await loader.load('model.bm', { variableOverrides: { height: 10 } });
+const model = await loader.load('model.bm', { variables: { height: 10 } });
 ```
+
+This works with all three object sources — `url`, `json`, and the flat
+`{ id, script }` form. A bare URL **string** cannot carry overrides; use the
+options-object form.
+
+```javascript
+loader.load({ id, script, variables: { height: 10 } });          // applied
+loader.load({ json: { id, script }, variables: { height: 10 } }); // applied
+loader.load({ url, variables: { height: 10 } });                 // applied
+```
+
+> **Fixed.** The flat `{ id, script }` form used to discard `variables` silently,
+> because it called `loadBM(modelDat, null, scope)` while the other two paths passed
+> the wrapper through. If you have code that relies on the old behaviour — an
+> override deliberately passed and expected to be ignored — that reliance is gone.
+
+An override is also not readable back off the model. `getPart('height')` returns
+the script's declared default and never the value that was passed in, because an
+override lives beside the script rather than in it. Whatever supplied an override
+has to remember what it supplied.
+
+An override naming a variable the script never declares is **dropped silently**:
+`{ hieght: 10 }` against `$height` loads with the default and reports nothing.
+Validate override names against the model if a typo would be expensive.
+
+Each distinct override set is cached separately, so loading one model with two
+different override objects produces two independent variants.
+
+---
+
+### Changing Variables After Load
+`setVariable(name, value)` overrides a variable and rebuilds the model from its
+script, since a variable change can alter geometry and not just appearance.
+
+**This method is asynchronous and must be awaited.** During the rebuild the model
+is empty, so inspecting it without awaiting will show no children.
+
+**Example:**
+```javascript
+// The "$" prefix is optional.
+await model.setVariable('height', 10);
+await model.setVariable('$height', 12);
+```
+
+Use `getPart(name)` to reach the rebuilt meshes.
+
+> **Note:** `clone(overrides)` records the overrides it is given but does not
+> rebuild the model, so on its own it does not change appearance. For a recoloured
+> copy, load the model again with a `variables` option, or `await` a
+> `setVariable()` call on the clone.
 
 ---
 
@@ -691,13 +901,103 @@ $logo > decal($wall, $logoTex, 0, 0, 0.1, 0, 0, 0, 1, 1, 1)
 ---
 
 ### Adding Objects
-Add one object to another using `add($object)`.
+Parent one object under another with `add($object)`.
 
 **Example:**
 ```javascript
 $parent > empty()
-$child > sphere(1, 32, 32) > add($parent)
+$child > sphere(1, 32, 32)
+$parent > add($child)   // $child becomes a child of $parent
 ```
+
+The object being modified is the one on the **left** of the `>`, so
+`$parent > add($child)` puts `$child` inside `$parent`. Reading the line as "add
+this object to the one in brackets" gives the direction backwards: the argument
+is the object being added, not the destination.
+
+Write the parts first and parent them afterwards, because `add()` always acts on
+the object named on its own line. One `add()` per level nests to any depth:
+
+```javascript
+$alley > empty()
+$section > empty()
+$pinDeck > empty() > position(0, 0, -30)
+
+$alley > add($section)     // section inside alley
+$section > add($pinDeck)   // deck inside section
+```
+
+An object can only have one parent, so adding it to a second one **moves** it
+instead of copying it. Use `clone()` when the same part is needed in two places.
+
+---
+
+### Groups
+`empty()` creates a group with no geometry, which is the usual way to mark a
+position that other objects hang from.
+
+**Example:**
+```javascript
+$container > empty() > position(0, 5, 0)
+```
+
+`startgroup()` / `endgroup()` wrap geometry creation into an implicit group,
+without naming the group on every line:
+
+**Example:**
+```javascript
+$flock > startgroup()
+$bird1 > sphere(0.2, 8, 8)
+$bird2 > sphere(0.2, 8, 8) > position(1, 0, 0)
+endgroup()
+```
+
+> **Warning:** the loader tracks one open group, not a stack of them. A
+> `startgroup()` inside another one abandons the outer group: its variable stops
+> resolving, and the objects created after the inner `endgroup()` end up outside
+> it. The outer group is not left empty — it is gone.
+>
+> This is easy to miss, because everything created before the inner `startgroup()`
+> still renders. Only the grouping and the name are lost, so the symptom is a
+> `getPart()` returning `undefined` rather than anything visibly broken.
+>
+> For anything nested — a lane with sections, a deck with individual pin spots —
+> use `empty()` plus explicit `add()`, as shown under
+> [Adding Objects](#adding-objects). That composes to any depth, and keeps every
+> part addressable by name.
+
+---
+
+### getPart(name)
+Returns the object a model variable was assigned to.
+
+**Parameters:**
+- `name` - Variable name, with or without the leading `$`
+
+**Returns:** The Three.js object, or `undefined` if nothing was assigned to that
+name. The lookup is exact, so `' pinDeck'` is not `'pinDeck'`.
+
+Only objects that were given a variable are reachable this way. A bare
+`box(1, 1, 1)` line still builds geometry, but nothing outside the script can name
+it, so it cannot be moved, hidden or replaced later.
+
+**Example:**
+```javascript
+$deck > empty() > position(0, 0, -30)
+$plate > box(1.5, 0.05, 1.5, #14100c, 0, standard)
+$deck > add($plate)
+
+const deck = model.getPart('deck');
+deck.getWorldPosition(new Vector3());   // 0, 0, -30
+```
+
+If the object had been rolled into a merged mesh, `getPart()` restores it before
+returning, so the result is always individually visible and pickable.
+
+> **Note:** a variable holds whatever was assigned to it, and a literal is stored
+> as written, so a number comes back as a **string**: `getPart('laneWidth')` on
+> `$laneWidth = 2.2` returns `"2.2"`. Convert with `Number()` before using the
+> value arithmetically.
 
 ---
 

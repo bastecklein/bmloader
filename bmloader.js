@@ -34,6 +34,8 @@ import {
     SpriteMaterial,
     Sprite,
     PointLight,
+    HemisphereLight,
+    DirectionalLight,
     Texture,
     ClampToEdgeWrapping,
     MirroredRepeatWrapping,
@@ -190,10 +192,13 @@ class BMLoader extends Loader {
             if(url.script && url.id) {
                 modelDat = rebuildBM(url);
                 
-                // Use model ID and revision as cache key for object-based loads
-                const cacheKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
+                // Model ID, revision AND variable overrides, exactly as the {json} path
+                // below does. Without the override term two loads of the same script
+                // with different variables share one cache entry, so the second one is
+                // handed the first one's geometry.
+                const cacheKey = getCacheKeyWithOverrides(`object_${modelDat.id}_r${modelDat.revision || 0}`, url.variables);
                 
-                // Check if we have a cached render model to clone (no overrides case)
+                // Check if we have a cached render model with these exact overrides
                 if(loadedRenderModels[cacheKey]) {
                     const clone = loadedRenderModels[cacheKey].clone();
                     if (clone) {
@@ -205,7 +210,11 @@ class BMLoader extends Loader {
                     }
                 }
 
-                loadBM(modelDat, null, scope).then(function(renderModel) {
+                /* `url`, not null: the wrapper carries `variables`, and loadBM() reads
+                   options.variables. This was null, which discarded every override on
+                   the flat `{ id, script }` form while `{ url }` and `{ json }` honoured
+                   them — the divergence OPERATIONS.md called out as a trap. */
+                loadBM(modelDat, url, scope).then(function(renderModel) {
                     renderModel.bmDat.cacheKey = cacheKey;
                     // Cache the first fully-loaded model for future cloning
                     if(!loadedRenderModels[cacheKey]) {
@@ -357,6 +366,7 @@ class RenderBasicModelProperties {
         this.cacheKey = null; // Loader cache key, shared by all clones of this template
         this._overrideSig = null; // Lazily built signature of src id + variable overrides
         this.mergeGroups = null; // Reversible static-geometry merges, see finalizeRenderModel
+        this.fog = null; // Scene-level fog declared by fog(); no Scene exists here, so the engine applies it
     }
 }
 
@@ -1139,8 +1149,8 @@ function hasGeometryOperation(str) {
     const geometryOps = [
         'sphere(', 'box(', 'cylinder(', 'cone(', 'torus(', 'capsule(',
         'shape(', 'plane(', 'lathe(', 'ring(', 'text(', 'pointlight(',
-        'fakelight(', 'decal(', 'empty()', 'startgroup()', 'startmerge()',
-        'usegeo('
+        'fakelight(', 'hemispherelight(', 'directionallight(', 'decal(',
+        'empty()', 'startgroup()', 'startmerge()', 'usegeo('
     ];
     
     return geometryOps.some(op => str.includes(op));
@@ -1408,7 +1418,10 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader,
             { keyword: "decal(", func: createDecalOperation },
             { keyword: "lathe(", func: createLatheOperation },
             { keyword: "pointlight(", func: createPointLightOperation },
-            { keyword: "fakelight(", func: createFakeLightOperation }
+            { keyword: "hemispherelight(", func: createHemisphereLightOperation },
+            { keyword: "directionallight(", func: createDirectionalLightOperation },
+            { keyword: "fakelight(", func: createFakeLightOperation },
+            { keyword: "fog(", func: createFogOperation }
         ];
 
         let handled = false;
@@ -3134,6 +3147,9 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
     clone.bmDat.geoTranslate = { ...sourceModel.bmDat.geoTranslate };
     clone.bmDat.cacheKey = sourceModel.bmDat.cacheKey;
     clone.bmDat._scriptLines = sourceModel.bmDat._scriptLines ? [...sourceModel.bmDat._scriptLines] : null;
+    // Fog is data rather than a graph node, so cloneObject3D() cannot carry it and it has
+    // to be copied explicitly like every other bmDat field.
+    clone.bmDat.fog = sourceModel.bmDat.fog ? { ...sourceModel.bmDat.fog } : null;
     
     // Apply variable overrides if provided
     if (variableOverrides) {
@@ -3204,6 +3220,39 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
                 if (child.name) clonedChild.name = child.name;
                 if (child.visible !== undefined) clonedChild.visible = child.visible;
                 
+            } else if (child instanceof HemisphereLight) {
+                // Skip lights entirely if disabled in loader (major performance boost)
+                if (sourceModel.bmDat.loaderRef && sourceModel.bmDat.loaderRef.enableLights === false) {
+                    return; // Don't clone lights when disabled
+                }
+
+                // HemisphereLight copies cleanly: sky, ground and intensity are all plain
+                // properties, so there is no trap here the way there is for a directional.
+                clonedChild = new HemisphereLight(child.color, child.groundColor, child.intensity);
+                clonedChild.position.copy(child.position);
+                clonedChild.rotation.copy(child.rotation);
+                clonedChild.scale.copy(child.scale);
+
+                clonedChild.castShadow = false; // Always disable shadows for performance
+                if (child.name) clonedChild.name = child.name;
+                if (child.visible !== undefined) clonedChild.visible = child.visible;
+
+            } else if (child instanceof DirectionalLight) {
+                // Skip lights entirely if disabled in loader (major performance boost)
+                if (sourceModel.bmDat.loaderRef && sourceModel.bmDat.loaderRef.enableLights === false) {
+                    return; // Don't clone lights when disabled
+                }
+
+                // The target is re-linked after this light's children are cloned, below.
+                clonedChild = new DirectionalLight(child.color, child.intensity);
+                clonedChild.position.copy(child.position);
+                clonedChild.rotation.copy(child.rotation);
+                clonedChild.scale.copy(child.scale);
+
+                clonedChild.castShadow = false; // Always disable shadows for performance
+                if (child.name) clonedChild.name = child.name;
+                if (child.visible !== undefined) clonedChild.visible = child.visible;
+
             } else if (child instanceof Group) {
                 // Create new group
                 clonedChild = new Group();
@@ -3230,6 +3279,18 @@ function cloneRenderModel(sourceModel, variableOverrides = null) {
             // Recursively clone children
             if (child.children && child.children.length > 0) {
                 cloneObject3D(child, clonedChild);
+            }
+
+            // A directional light aims at its target, and the target has to be part of the
+            // CLONE's own graph. Without this re-link the clone keeps pointing at the
+            // template's target, which is never added to a scene — so its world matrix is
+            // never refreshed and the aim silently collapses to the world origin. Doing it
+            // here (after the children are cloned) is what makes the cloned target exist.
+            if (clonedChild instanceof DirectionalLight) {
+                const clonedTarget = clonedChild.children.find(
+                    (c) => c.userData && c.userData.bmLightTarget
+                );
+                if (clonedTarget) clonedChild.target = clonedTarget;
             }
         });
     }
@@ -3348,6 +3409,166 @@ function createPointLightOperation(code, renderModel, currentGroup, loader) {
     }
 
     return light;
+}
+
+/**
+ * Places a light in the model.
+ *
+ * three.js collects lights by traversing the scene graph, so a light parented anywhere
+ * under the model starts lighting the scene the moment the engine adds the model. That is
+ * why these operations need no engine plumbing at all — unlike fog, which has no object
+ * to parent.
+ */
+function addLightToModel(light, renderModel, currentGroup) {
+    if(currentGroup) {
+        currentGroup.add(light);
+    } else {
+        renderModel.add(light);
+    }
+}
+
+/**
+ * hemispherelight([skyColor], [groundColor], [intensity])
+ *
+ * A sky/ground light pair: sky colours whatever faces up, ground whatever faces down, the
+ * two blending by surface normal. Much cheaper than pointlight() — one per-pixel blend
+ * with no positional falloff — which makes it the natural fill for a lane.
+ */
+function createHemisphereLightOperation(code, renderModel, currentGroup, loader) {
+    if (loader && loader.enableLights === false) {
+        return null;
+    }
+
+    const parts = code.replace("hemispherelight(","").replace(")","").split(",");
+
+    let skyColor = "#ffffff";
+    let groundColor = "#444444";
+    let intensity = 1;
+
+    if(parts.length >= 1 && parts[0].trim()) {
+        skyColor = getModValue(parts[0], renderModel);
+    }
+
+    if(parts.length >= 2 && parts[1].trim()) {
+        groundColor = getModValue(parts[1], renderModel);
+    }
+
+    if(parts.length >= 3 && parts[2].trim()) {
+        intensity = Number(getModValue(parts[2], renderModel));
+    }
+
+    const light = new HemisphereLight(skyColor, groundColor, intensity);
+    light.castShadow = false;
+
+    addLightToModel(light, renderModel, currentGroup);
+
+    return light;
+}
+
+/**
+ * directionallight([color], [intensity], [dirX], [dirY], [dirZ])
+ *
+ * A sun-like light, aimed by the direction it travels (default straight down).
+ *
+ * ⚠️ THE TARGET TRAP — read before "simplifying" the code below.
+ * A DirectionalLight's aim is its target's WORLD position minus its own, and three.js only
+ * refreshes the world matrix of a target that is in the scene graph. A target that is
+ * merely positioned — the obvious implementation — is silently ignored and the light aims
+ * at the world origin instead, whatever the file says. THREE's own .clone() copies
+ * target.position, so it inspects as correct and renders as wrong.
+ *
+ * Parenting the target TO THE LIGHT fixes this and reads better: the target offset
+ * becomes the light's own local aim vector, and as a child it is always in the graph and
+ * always updated with the model.
+ *
+ * Shadows stay with the engine (castShadow = false): a lane owns colour, intensity and
+ * direction, not shadow-map budget.
+ */
+function createDirectionalLightOperation(code, renderModel, currentGroup, loader) {
+    if (loader && loader.enableLights === false) {
+        return null;
+    }
+
+    const parts = code.replace("directionallight(","").replace(")","").split(",");
+
+    let color = "#ffffff";
+    let intensity = 1;
+    let dirX = 0;
+    let dirY = -1; // travelling straight down
+    let dirZ = 0;
+
+    if(parts.length >= 1 && parts[0].trim()) {
+        color = getModValue(parts[0], renderModel);
+    }
+
+    if(parts.length >= 2 && parts[1].trim()) {
+        intensity = Number(getModValue(parts[1], renderModel));
+    }
+
+    if(parts.length >= 3 && parts[2].trim()) {
+        dirX = Number(getModValue(parts[2], renderModel));
+    }
+
+    if(parts.length >= 4 && parts[3].trim()) {
+        dirY = Number(getModValue(parts[3], renderModel));
+    }
+
+    if(parts.length >= 5 && parts[4].trim()) {
+        dirZ = Number(getModValue(parts[4], renderModel));
+    }
+
+    const light = new DirectionalLight(color, intensity);
+    light.castShadow = false;
+
+    // The target is a CHILD of the light — see THE TARGET TRAP above. cloneObject3D()
+    // re-links each clone to its own copy of this node by this marker.
+    light.target.name = "__bmDirlightTarget";
+    light.target.userData.bmLightTarget = true;
+    light.target.position.set(dirX, dirY, dirZ);
+    light.add(light.target);
+
+    addLightToModel(light, renderModel, currentGroup);
+
+    return light;
+}
+
+/**
+ * fog([color], [near], [far])
+ *
+ * Declares scene fog — and is the one operation here that is NOT an object.
+ *
+ * Fog lives on THREE.Scene (scene.fog) and this loader never holds a Scene reference, so
+ * there is nothing to parent it to and nothing for cloneObject3D() to copy. It is recorded
+ * as data on bmDat for the engine to apply:
+ *
+ *     const fog = model.bmDat.fog;   // { color, near, far } or null
+ *
+ * Use it standalone. It has no position, so a transform after it does nothing.
+ */
+function createFogOperation(code, renderModel, currentGroup, loader) {
+    const parts = code.replace("fog(","").replace(")","").split(",");
+
+    let color = "#ffffff";
+    let near = 1;
+    let far = 100;
+
+    if(parts.length >= 1 && parts[0].trim()) {
+        color = getModValue(parts[0], renderModel);
+    }
+
+    if(parts.length >= 2 && parts[1].trim()) {
+        near = Number(getModValue(parts[1], renderModel));
+    }
+
+    if(parts.length >= 3 && parts[2].trim()) {
+        far = Number(getModValue(parts[2], renderModel));
+    }
+
+    renderModel.bmDat.fog = { color, near, far };
+
+    // Deliberately returns nothing: fog is not an object, so there is no node to add, no
+    // transform to chain onto it, and nothing to store in a variable.
+    return null;
 }
 
 /**
