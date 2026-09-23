@@ -348,9 +348,16 @@ $merged > texture($crateTex&repeatX=2&repeatY=2&wrap=repeat)
 ### lightmap($texture, 1.0)
 Applies a light map texture to an object (baked lighting).
 
+The texture reference accepts the same `&key=value` modifiers as `texture($texture)`.
+
 **Parameters:**
 - `$texture` - Texture reference
 - Intensity
+
+> **Note:** the light map is a separate texture object from the object's color
+> texture, and it does not inherit that texture's repeat, offset, or wrap
+> settings. If the two need to line up, repeat the color texture's numbers on the
+> light map reference as well.
 
 **Example:**
 ```javascript
@@ -362,13 +369,29 @@ $room > box(10, 10, 10) > lightmap($roomLightmap)
 ### bumpmap($texture, 1.0)
 Applies a bump map texture to an object (surface detail).
 
+The texture reference accepts the same `&key=value` modifiers as `texture($texture)`.
+
 **Parameters:**
 - `$texture` - Texture reference
 - Intensity
 
+> **Note:** the bump texture is a separate texture object from the object's color
+> texture, and it does not inherit that texture's repeat, offset, or wrap
+> settings. A bare `bumpmap($brickBump)` therefore tiles once (`repeatX=1`,
+> `repeatY=1`, clamped) even when the color texture on the same object repeats
+> many times. The surface is still bumped and the color texture is still correct,
+> and nothing warns — but the relief lines up with nothing and reads as large
+> soft blobs. Repeat the color texture's repeat numbers verbatim on the bump
+> reference.
+
 **Example:**
 ```javascript
 $wall > plane(5, 5) > bumpmap($brickBump)
+```
+
+Matching a color texture that repeats 4 x 4:
+```javascript
+$wall > plane(5, 5) > bumpmap($brickBump&repeatX=4&repeatY=4&wrap=repeat)
 ```
 
 ---
