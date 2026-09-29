@@ -1141,6 +1141,35 @@ function unmergeContaining(renderModel, node) {
 }
 
 /**
+ * Deep-clones an object for the clone() operation. Geometry and interned (shared)
+ * materials are shared; private materials are copied, because makeMaterialWritable()
+ * only copies SHARED materials — an aliased private material would let a later
+ * material() or animation on the clone leak back into the source.
+ * @param {Object3D} source - The object to clone
+ * @return {Object3D} The clone
+ */
+function cloneSceneObject(source) {
+    const copy = source.clone(true);
+    const cloneMaterial = (mat) => (mat && !mat.userData.__bmShared) ? mat.clone() : mat;
+
+    copy.traverse((node) => {
+        if (node.material) {
+            node.material = Array.isArray(node.material)
+                ? node.material.map(cloneMaterial)
+                : cloneMaterial(node.material);
+        }
+
+        // Re-aim directional lights at their own cloned target (see cloneObject3D).
+        if (node instanceof DirectionalLight) {
+            const target = node.children.find((c) => c.userData && c.userData.bmLightTarget);
+            if (target) node.target = target;
+        }
+    });
+
+    return copy;
+}
+
+/**
  * Checks if a string contains geometry creation operations
  * @param {string} str - The string to check
  * @return {boolean} True if it contains geometry operations
@@ -1150,7 +1179,7 @@ function hasGeometryOperation(str) {
         'sphere(', 'box(', 'cylinder(', 'cone(', 'torus(', 'capsule(',
         'shape(', 'plane(', 'lathe(', 'ring(', 'text(', 'pointlight(',
         'fakelight(', 'hemispherelight(', 'directionallight(', 'decal(',
-        'empty()', 'startgroup()', 'startmerge()', 'usegeo('
+        'empty()', 'startgroup()', 'startmerge()', 'usegeo(', 'clone('
     ];
     
     return geometryOps.some(op => str.includes(op));
@@ -1398,6 +1427,29 @@ async function negotiateInstructionLine(line, renderModel, currentGroup, loader,
                 if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
             } else {
                 console.warn("usegeo: Invalid or missing geometry reference:", varName);
+            }
+            continue;
+        }
+
+        // Handle clone operation: deep copy of any object (mesh, group, light, ...)
+        if (mod.startsWith("clone(") && mod.endsWith(")")) {
+            const varName = mod.slice(6, -1).trim().replace("$", "");
+            const sourceObj = renderModel.bmDat.variables[varName];
+
+            if (sourceObj && sourceObj.isObject3D) {
+                usingObj = cloneSceneObject(sourceObj);
+
+                if (currentGroup.merging && usingObj.geometry) {
+                    currentGroup.mergeList.push(usingObj);
+                } else if (currentGroup.grp) {
+                    currentGroup.grp.add(usingObj);
+                } else {
+                    renderModel.add(usingObj);
+                }
+
+                if (usingVar) renderModel.bmDat.variables[usingVar] = usingObj;
+            } else {
+                console.warn("clone: Invalid or missing object reference:", varName);
             }
             continue;
         }
@@ -1741,8 +1793,6 @@ function getModValue(val, renderModel, visited = new Set()) {
             return 0;
         }
 
-        visited.add(key);
-
         // Check overrides first, then variables
         let value = overrides[key];
         if (typeof value === 'undefined') {
@@ -1750,8 +1800,16 @@ function getModValue(val, renderModel, visited = new Set()) {
         }
         if (typeof value === 'undefined') return 0;
 
-        // Recurse and fully resolve the variable's value
-        return getModValue(value, renderModel, visited);
+        // `visited` is the current reference CHAIN, not everything seen so far: a key
+        // is only circular if it appears in its own ancestry. Removing it after the
+        // recursion lets two terms share a variable ($b=$a+$tile, $a=$tile*2) without
+        // that reuse being mistaken for a cycle and silently resolved to 0.
+        visited.add(key);
+        try {
+            return getModValue(value, renderModel, visited);
+        } finally {
+            visited.delete(key);
+        }
     }
 
     // Fast path: simple variable reference ($foo or -$foo)

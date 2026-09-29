@@ -260,7 +260,9 @@ Clones any object (mesh, group, light, etc.) with all its children and propertie
 **Features:**
 - Works with meshes, groups, lights, and any Three.js object
 - Deep clones all children recursively
-- Shares geometries and materials (efficient)
+- Shares geometry and the loader's shared materials (efficient); a material
+  already customised with `material()` is copied, so later changes to the clone
+  never affect the source
 - Can be assigned to a variable for further modification
 
 **Example:**
@@ -514,7 +516,51 @@ $tree > cylinder(0.2, 0.2, 5, 8) > bottomAlign()
 
 ## Animation Operations
 
-Animations are defined with the syntax: `@name > $object > action > values > speed`
+Each animation line has the form:
+
+```javascript
+@name > action($object, speed, step1, step2, ...)
+```
+
+- `@name` - the animation this line belongs to. Every line with the same name
+  plays together, so an animation is usually several lines.
+- `action` - what to animate (see the tables below).
+- `$object` - the object to animate.
+- `speed` - how fast it moves. **The unit depends on the action** (see below).
+- `step1, step2, ...` - values the property moves through in order, looping back
+  to `step1` after the last one. A step can be a number, a variable, or an
+  expression such as `$h*2`. It **cannot contain parentheses**, because the line
+  is split on `(`; put the value in a variable first.
+
+You can chain several actions on one line (`@name > positionY(...) > rotateY(...)`),
+but one action per line is easier to read.
+
+### Playing an animation
+
+Nothing moves until you choose an animation and call `animate()` every frame:
+
+```javascript
+model.bmDat.animation = "running";   // null stops it and restores the saved pose
+model.animate(deltaSeconds);         // call from your render loop
+```
+
+### Speed units
+
+The speed number is **not** a common unit. For the smoothly moving actions it is
+run through a degrees-to-radians conversion, so each action ends up with its own
+meaning:
+
+| Action | `speed` means | Example |
+| --- | --- | --- |
+| `rotateX` / `rotateY` / `rotateZ` | degrees per second | `90` = a quarter turn per second |
+| `positionX` / `positionY` / `positionZ` | speed × π/180 units per second (≈ speed ÷ 57.3) | `57.3` = 1 unit per second |
+| `scaleX` / `scaleY` / `scaleZ` | speed × π/180 per second (≈ speed ÷ 57.3) | `57.3` = +1.0 scale per second |
+| `emissiveIntensity`, `opacity` | speed × π/180 × 10 per second (≈ speed ÷ 5.73) | `5.73` = 1.0 per second |
+| `visible`, `txChange` | seconds held on each step | `0.5` = change every half second |
+
+Smooth actions move toward the current step at that rate and go on to the next
+step when they reach it, so how long a cycle takes depends on the distance
+between steps as well as on the speed.
 
 ### Supported Actions
 
@@ -525,19 +571,21 @@ Animations are defined with the syntax: `@name > $object > action > values > spe
 
 **Example:**
 ```javascript
-@bounce > $ball > positionY > 0|2|0 > 2
+// Bob between y=0 and y=2 at 2 units per second
+@bounce > positionY($ball, 115, 0, 2)
 ```
 
 ---
 
 #### Rotation Animations
-- `rotateX` - Animate X rotation (degrees)
-- `rotateY` - Animate Y rotation (degrees)
-- `rotateZ` - Animate Z rotation (degrees)
+- `rotateX` - Animate X rotation (steps in degrees)
+- `rotateY` - Animate Y rotation (steps in degrees)
+- `rotateZ` - Animate Z rotation (steps in degrees)
 
 **Example:**
 ```javascript
-@spin > $propeller > rotateY > 0|360 > 5
+// One full turn every 2 seconds (180 degrees per second)
+@spin > rotateY($propeller, 180, 0, 360)
 ```
 
 ---
@@ -549,9 +597,9 @@ Animations are defined with the syntax: `@name > $object > action > values > spe
 
 **Example:**
 ```javascript
-@pulse > $heart > scaleX > 1|1.2|1 > 1
-@pulse > $heart > scaleY > 1|1.2|1 > 1
-@pulse > $heart > scaleZ > 1|1.2|1 > 1
+@pulse > scaleX($heart, 23, 1, 1.2)
+@pulse > scaleY($heart, 23, 1, 1.2)
+@pulse > scaleZ($heart, 23, 1, 1.2)
 ```
 
 ---
@@ -559,12 +607,14 @@ Animations are defined with the syntax: `@name > $object > action > values > spe
 #### Material Property Animations
 
 ##### emissiveIntensity
-Animates the emissive intensity (glow brightness).
+Animates the emissive intensity (glow brightness). The object needs an emissive
+color first, e.g. with `material()`; otherwise there is nothing to brighten.
 
 **Example:**
 ```javascript
-@blink > $light > emissiveIntensity > 0|3|0 > 0.5
-@pulse > $beacon > emissiveIntensity > 1|5|1|0.5 > 2
+$light > material(#330000, 0, 0, 0.5, 0, 0, #ff2020, 0)
+@blink > emissiveIntensity($light, 17, 0, 3)
+@pulse > emissiveIntensity($beacon, 11, 1, 5, 1, 0.5)
 ```
 
 ---
@@ -574,18 +624,19 @@ Animates the material opacity.
 
 **Example:**
 ```javascript
-@fade > $ghost > opacity > 1|0.2|1 > 3
+@fade > opacity($ghost, 3, 1, 0.2)
 ```
 
 ---
 
 ##### visible
-Toggles object visibility on/off. Uses time-based intervals (not smooth transitions).
+Switches the object on and off. It does not fade: each step is held for `speed`
+seconds. `1`/`true` shows the object and `0`/`false` hides it.
 
 **Example:**
 ```javascript
-@blink > $warning > visible > 1|0|1|0 > 0.5
-@flash > $strobe > visible > 1|0 > 0.1
+@blink > visible($warning, 0.5, 1, 0)
+@flash > visible($strobe, 0.1, 1, 0)
 ```
 
 ---
@@ -593,11 +644,12 @@ Toggles object visibility on/off. Uses time-based intervals (not smooth transiti
 #### Texture Change Animation
 
 ##### txChange
-Cycles through different textures (frame animation).
+Cycles through different textures (frame animation). Each frame is held for
+`speed` seconds.
 
 **Example:**
 ```javascript
-@animate > $sprite > txChange > $frame1|$frame2|$frame3 > 0.1
+@animate > txChange($sprite, 0.1, $frame1, $frame2, $frame3)
 ```
 
 ---
@@ -631,9 +683,9 @@ $blueglow > fakelight(#0088ff, 3, 0.8) > position(-5, 1, 0)
 **Animation Support:**
 ```javascript
 $pulsing > fakelight(#ff00ff, 2, 1)
-@pulse > $pulsing > scaleX > 1|1.5|1 > 1
-@pulse > $pulsing > scaleY > 1|1.5|1 > 1
-@blink > $pulsing > visible > 1|0|1|0 > 0.5
+@pulse > scaleX($pulsing, 57, 1, 1.5)
+@pulse > scaleY($pulsing, 57, 1, 1.5)
+@blink > visible($pulsing, 0.5, 1, 0)
 ```
 
 ---
@@ -1068,7 +1120,7 @@ $tower > cylinder($towerRadius, $towerRadius, $towerHeight, 16, #cccccc) > posit
 $beacon > fakelight(#ff0000, 1.5, 2) > position(0, $towerHeight + 0.5, 0)
 
 // Add pulsing animation to beacon
-@pulse > $beacon > scaleX > 1|1.3|1 > 1
-@pulse > $beacon > scaleY > 1|1.3|1 > 1
-@spin > $beacon > rotateZ > 0|360 > 3
+@pulse > scaleX($beacon, 34, 1, 1.3)
+@pulse > scaleY($beacon, 34, 1, 1.3)
+@spin > rotateZ($beacon, 120, 0, 360)
 ```
