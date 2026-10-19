@@ -52,9 +52,12 @@ import { mergeGeometries } from "three/addons/utils/BufferGeometryUtils.js";
 import { Parser } from "expr-eval";
 
 const storedGeometries = {};
+// Reverse index of storedGeometries: a merge names its sources without scanning the whole cache.
+const storedGeometryKeys = new WeakMap();
 const storedImageCanvases = {};
 const storedMaterials = {};
 const loadedRenderModels = {}; // Cache for fully-loaded render models
+const pendingRenderModels = new Map(); // cacheKey -> Promise of a render model still being parsed
 const loadedFonts = {}; // Cache for loaded fonts
 
 // Interned (shared, immutable) materials and textures. Anything that mutates one
@@ -62,6 +65,14 @@ const loadedFonts = {}; // Cache for loaded fonts
 const internedMaterials = new Map();
 const internedTextures = new Map();
 const _matClassIds = new Map();
+
+function storeGeometry(key, geometry) {
+    storedGeometries[key] = geometry;
+
+    if(!storedGeometryKeys.has(geometry)) {
+        storedGeometryKeys.set(geometry, key);
+    }
+}
 
 function getMatClassId(matClass) {
     let id = _matClassIds.get(matClass);
@@ -185,79 +196,34 @@ class BMLoader extends Loader {
         const scope = this;
 
         let options = {};
-        let modelDat = null;
 
         if(typeof url === "object") {
 
             if(url.script && url.id) {
-                modelDat = rebuildBM(url);
+                const modelDat = rebuildBM(url);
                 
                 // Model ID, revision AND variable overrides, exactly as the {json} path
                 // below does. Without the override term two loads of the same script
                 // with different variables share one cache entry, so the second one is
                 // handed the first one's geometry.
                 const cacheKey = getCacheKeyWithOverrides(`object_${modelDat.id}_r${modelDat.revision || 0}`, url.variables);
-                
-                // Check if we have a cached render model with these exact overrides
-                if(loadedRenderModels[cacheKey]) {
-                    const clone = loadedRenderModels[cacheKey].clone();
-                    if (clone) {
-                        onLoad(clone);
-                        return;
-                    } else {
-                        // Cache was corrupted, remove it and rebuild
-                        delete loadedRenderModels[cacheKey];
-                    }
-                }
 
                 /* `url`, not null: the wrapper carries `variables`, and loadBM() reads
                    options.variables. This was null, which discarded every override on
                    the flat `{ id, script }` form while `{ url }` and `{ json }` honoured
                    them — the divergence OPERATIONS.md called out as a trap. */
-                loadBM(modelDat, url, scope).then(function(renderModel) {
-                    renderModel.bmDat.cacheKey = cacheKey;
-                    // Cache the first fully-loaded model for future cloning
-                    if(!loadedRenderModels[cacheKey]) {
-                        loadedRenderModels[cacheKey] = renderModel;
-                    }
-                    // ALWAYS return a clone to prevent material sharing between instances
-                    const clone = renderModel.clone();
-                    onLoad(clone);
-                });
-
+                loadCachedRenderModel(cacheKey, () => loadBM(modelDat, url, scope), onLoad, onError);
                 return;
             }
 
             if(url.json && url.json.script && url.json.id) {
-                modelDat = rebuildBM(url.json);
+                const modelDat = rebuildBM(url.json);
                 
                 // Use model ID, revision, AND variable overrides in cache key
                 const baseKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
                 const cacheKey = getCacheKeyWithOverrides(baseKey, url.variables);
-                
-                // Check if we have a cached render model with these exact overrides
-                if(loadedRenderModels[cacheKey]) {
-                    const clone = loadedRenderModels[cacheKey].clone();
-                    if (clone) {
-                        onLoad(clone);
-                        return;
-                    } else {
-                        // Cache was corrupted, remove it and rebuild
-                        delete loadedRenderModels[cacheKey];
-                    }
-                }
 
-                loadBM(modelDat, url, scope).then(function(renderModel) {
-                    renderModel.bmDat.cacheKey = cacheKey;
-                    // Cache with override-specific key for future cloning
-                    if(!loadedRenderModels[cacheKey]) {
-                        loadedRenderModels[cacheKey] = renderModel;
-                    }
-                    // ALWAYS return a clone to prevent material sharing between instances
-                    const clone = renderModel.clone();
-                    onLoad(clone);
-                });
-
+                loadCachedRenderModel(cacheKey, () => loadBM(modelDat, url, scope), onLoad, onError);
                 return;
             }
 
@@ -270,56 +236,84 @@ class BMLoader extends Loader {
             }
         }
 
-        if(remoteModels[url]) {
-            // Include variable overrides in cache key
-            const cacheKey = getCacheKeyWithOverrides(url, options?.variables);
-            
-            // Check if we have a fully-loaded render model with these exact overrides
-            if(loadedRenderModels[cacheKey]) {
-                const clone = loadedRenderModels[cacheKey].clone();
-                onLoad(clone);
-                return;
-            }
-            
-            loadBM(remoteModels[url], options, scope).then(function(renderModel) {
-                renderModel.bmDat.cacheKey = cacheKey;
-                // Cache with override-specific key for future cloning
-                if(!loadedRenderModels[cacheKey]) {
-                    loadedRenderModels[cacheKey] = renderModel;
-                }
-                // ALWAYS return a clone to prevent material sharing between instances
-                const clone = renderModel.clone();
-                onLoad(clone);
-            });
+        // Include variable overrides in cache key
+        const cacheKey = getCacheKeyWithOverrides(url, options?.variables);
 
+        loadCachedRenderModel(cacheKey, function() {
+            if(remoteModels[url]) {
+                return loadBM(remoteModels[url], options, scope);
+            }
+
+            return new Promise(function(resolve, reject) {
+                const loader = new FileLoader(scope.manager);
+                loader.setResponseType("json");
+                loader.setPath(scope.path);
+                loader.load(url, function(data) {
+                    const modelDat = rebuildBM(data);
+                    remoteModels[url] = modelDat;
+                    resolve(loadBM(modelDat, options, scope));
+                }, onProgress, reject);
+            });
+        }, onLoad, onError);
+    }
+}
+
+/**
+ * Parses (or fetches and parses) a model at most once per cache key, however many
+ * loads ask for it while the first is still in flight, and hands every caller a clone.
+ *
+ * Without the in-flight entry, every load that arrived before the first parse finished
+ * started its own: a scene placing 5,000 copies of one model in one pass parsed it 5,000
+ * times, which is what made a large scene slow to appear.
+ * @param {string} cacheKey
+ * @param {function(): Promise<RenderBasicModel>} build - Parses the model on a cache miss
+ * @param {function(RenderBasicModel): void} onLoad
+ * @param {function(*): void} [onError]
+ */
+function loadCachedRenderModel(cacheKey, build, onLoad, onError) {
+    const cached = loadedRenderModels[cacheKey];
+
+    if(cached) {
+        // ALWAYS hand out a clone to prevent material sharing between instances
+        const clone = cached.clone();
+
+        if(clone) {
+            onLoad(clone);
             return;
         }
 
-        const loader = new FileLoader(scope.manager);
-        loader.setResponseType("json");
-        loader.setPath(this.path);
-        loader.load(url, function (data) {
-
-            modelDat = rebuildBM(data);
-            remoteModels[url] = modelDat;
-
-            // Include variable overrides in cache key
-            const cacheKey = getCacheKeyWithOverrides(url, options?.variables);
-
-            loadBM(modelDat, options, scope).then(function(renderModel) {
-                renderModel.bmDat.cacheKey = cacheKey;
-                // Cache with override-specific key for future cloning
-                if(!loadedRenderModels[cacheKey]) {
-                    loadedRenderModels[cacheKey] = renderModel;
-                }
-                // ALWAYS return a clone to prevent material sharing between instances
-                const clone = renderModel.clone();
-                onLoad(clone);
-            });
-
-            
-        }, onProgress, onError);
+        // Cache was corrupted, remove it and rebuild
+        delete loadedRenderModels[cacheKey];
     }
+
+    let pending = pendingRenderModels.get(cacheKey);
+
+    if(!pending) {
+        pending = Promise.resolve().then(build).then(function(renderModel) {
+            renderModel.bmDat.cacheKey = cacheKey;
+
+            if(!loadedRenderModels[cacheKey]) {
+                loadedRenderModels[cacheKey] = renderModel;
+            }
+
+            return loadedRenderModels[cacheKey];
+        });
+
+        pendingRenderModels.set(cacheKey, pending);
+
+        const settle = () => pendingRenderModels.delete(cacheKey);
+        pending.then(settle, settle);
+    }
+
+    pending.then(function(renderModel) {
+        onLoad(renderModel.clone());
+    }, function(err) {
+        if(onError) {
+            onError(err);
+        } else {
+            console.error("bmloader: model failed to load", cacheKey, err);
+        }
+    });
 }
 
 class BasicModel {
@@ -1630,7 +1624,7 @@ async function createSphereOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 5) {
@@ -1673,13 +1667,7 @@ function createMergedGeometry(meshList) {
         if (!m || !m.geometry) return '';
         
         // Find the storedGeometries key for this geometry
-        let geoKey = null;
-        for (const [key, geo] of Object.entries(storedGeometries)) {
-            if (geo === m.geometry) {
-                geoKey = key;
-                break;
-            }
-        }
+        let geoKey = storedGeometryKeys.get(m.geometry) || null;
         
         // If not found in cache, use geometry type and basic params
         if (!geoKey) {
@@ -1730,7 +1718,7 @@ function createMergedGeometry(meshList) {
     const mergedGeometry = mergeGeometries(geometriesToMerge, false);
     
     // Cache the merged geometry
-    storedGeometries[geoHash] = mergedGeometry;
+    storeGeometry(geoHash, mergedGeometry);
     
     // Create mesh with default material (user can override with material() operation)
     const defaultMaterial = internMaterial(MeshLambertMaterial, { color: DEF_MODEL_COLOR });
@@ -1903,7 +1891,7 @@ async function createTorusOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 6) {
@@ -1940,7 +1928,7 @@ async function createPlaneOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         let depthWrite = true;
@@ -1989,7 +1977,7 @@ async function createRingOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 5) {
@@ -2063,7 +2051,7 @@ async function createTextOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 7) {
@@ -2101,7 +2089,7 @@ async function createBoxOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 5) {
@@ -2142,7 +2130,7 @@ async function createConeOperation(code, renderModel, currentGroup, loader) {
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 5) {
@@ -2243,7 +2231,7 @@ async function createShapeOperation(code, renderModel, currentGroup, loader) {
 
         geometry = new ExtrudeGeometry(shape, extrudeSettings);
         geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
-        storedGeometries[geoName] = geometry;
+        storeGeometry(geoName, geometry);
     }
 
     if(parts.length > 7) {
@@ -2281,7 +2269,7 @@ async function createCapsuleOperation(code, renderModel, currentGroup, loader) {
         } else {
             geometry = new CapsuleGeometry(rad, height, seg, radseg);
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 6) {
@@ -2331,7 +2319,7 @@ async function createCylinderOperation(code, renderModel, currentGroup, loader) 
 
             geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
 
-            storedGeometries[geoName] = geometry;
+            storeGeometry(geoName, geometry);
         }
 
         if(parts.length > 6) {
@@ -3802,7 +3790,7 @@ async function createLatheOperation(code, renderModel, currentGroup, loader) {
         geometry = new LatheGeometry(points, segments, 0, phiLength);
         geometry.computeVertexNormals();
         geometry.translate(renderModel.bmDat.geoTranslate.x, renderModel.bmDat.geoTranslate.y, renderModel.bmDat.geoTranslate.z);
-        storedGeometries[geoName] = geometry;
+        storeGeometry(geoName, geometry);
     }
 
     if(parts.length > 5) {
