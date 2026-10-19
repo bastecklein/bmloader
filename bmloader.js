@@ -212,7 +212,7 @@ class BMLoader extends Loader {
                    options.variables. This was null, which discarded every override on
                    the flat `{ id, script }` form while `{ url }` and `{ json }` honoured
                    them — the divergence OPERATIONS.md called out as a trap. */
-                loadCachedRenderModel(cacheKey, () => loadBM(modelDat, url, scope), onLoad, onError);
+                loadCachedRenderModel(cacheKey, () => loadBM(modelDat, url, scope), onLoad, onError, url.shared === true);
                 return;
             }
 
@@ -223,7 +223,7 @@ class BMLoader extends Loader {
                 const baseKey = `object_${modelDat.id}_r${modelDat.revision || 0}`;
                 const cacheKey = getCacheKeyWithOverrides(baseKey, url.variables);
 
-                loadCachedRenderModel(cacheKey, () => loadBM(modelDat, url, scope), onLoad, onError);
+                loadCachedRenderModel(cacheKey, () => loadBM(modelDat, url, scope), onLoad, onError, url.shared === true);
                 return;
             }
 
@@ -254,7 +254,7 @@ class BMLoader extends Loader {
                     resolve(loadBM(modelDat, options, scope));
                 }, onProgress, reject);
             });
-        }, onLoad, onError);
+        }, onLoad, onError, options.shared === true);
     }
 }
 
@@ -269,9 +269,16 @@ class BMLoader extends Loader {
  * @param {function(): Promise<RenderBasicModel>} build - Parses the model on a cache miss
  * @param {function(RenderBasicModel): void} onLoad
  * @param {function(*): void} [onError]
+ * @param {boolean} [shared] - hand back the cached model itself, not a clone. The caller
+ *   must treat it as read-only: it is the source every later clone is made from.
  */
-function loadCachedRenderModel(cacheKey, build, onLoad, onError) {
+function loadCachedRenderModel(cacheKey, build, onLoad, onError, shared = false) {
     const cached = loadedRenderModels[cacheKey];
+
+    if(cached && shared) {
+        onLoad(cached);
+        return;
+    }
 
     if(cached) {
         // ALWAYS hand out a clone to prevent material sharing between instances
@@ -306,7 +313,7 @@ function loadCachedRenderModel(cacheKey, build, onLoad, onError) {
     }
 
     pending.then(function(renderModel) {
-        onLoad(renderModel.clone());
+        onLoad(shared ? renderModel : renderModel.clone());
     }, function(err) {
         if(onError) {
             onError(err);

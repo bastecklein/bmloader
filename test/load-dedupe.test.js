@@ -52,3 +52,19 @@ test("a load after the first has finished still clones the cached model", async 
     assert.notEqual(first, second);
     assert.equal(first.bmDat.src, second.bmDat.src);
 });
+
+test("a shared load hands back the one cached model, before and after it is parsed", async () => {
+    const json = spec("$a>box(1,1,1,#ff0000)");
+    const shared = (variables) => new Promise((resolve, reject) => {
+        new BMLoader().load({ json, variables, shared: true }, resolve, undefined, reject);
+    });
+
+    const [a, b] = await Promise.all([shared({ tile: 2 }), shared({ tile: 2 })]);
+    const later = await shared({ tile: 2 });
+    const clone = await load(json, { tile: 2 });
+
+    assert.equal(a, b);
+    assert.equal(a, later);
+    assert.notEqual(clone, a, "an ordinary load still gets a clone");
+    assert.equal(clone.bmDat.cacheKey, a.bmDat.cacheKey);
+});

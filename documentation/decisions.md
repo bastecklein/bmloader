@@ -35,3 +35,14 @@ loads of one model took 652 ms, now 37 ms. The cache scan was 91% of parse time 
 profile and grew with every geometry ever stored, so each parse was slower than the last;
 a parse fell from ~28 ms to ~2 ms. In the app, a 120x120 city's buildings went from ~20 s
 to ~1 s to appear. `test/load-dedupe.test.js` fails on the old loader.
+
+## 2026-10-19 — A `shared: true` load returns the cached model itself
+
+**Decided:** every load form accepts `shared: true`, which hands back the cached render model
+instead of a clone, both from the cache and when the in-flight parse finishes. Ordinary loads
+are unchanged and still get a clone.
+
+**Why:** a renderer that draws many copies through instancing only needs the model's geometry,
+materials and part transforms, not a scene graph of its own per copy. Scroll3D's instanced path
+now uses this; cloning was most of the cost of scrolling a dense city. The returned model is
+read-only by contract: it is what every later clone is made from.
