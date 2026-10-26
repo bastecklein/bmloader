@@ -46,3 +46,38 @@ are unchanged and still get a clone.
 materials and part transforms, not a scene graph of its own per copy. Scroll3D's instanced path
 now uses this; cloning was most of the cost of scrolling a dense city. The returned model is
 read-only by contract: it is what every later clone is made from.
+
+**Reached from:** My City and Scroll3D. My City uses the option only for static, non-hittable
+objects that will be instanced; ordinary callers retain clone isolation. Committed as `97fcbd5`
+and pushed, with My City's lockfile pinned to this version. My City keeps
+`documentation/patches/bmloader-shared-load.patch` as review history; no phone timing has been
+collected.
+
+## 2026-10-26 — Looping animation lines share one clock per animation
+
+**Decided:** When `bmDat.animation` changes, every instruction of the new animation
+restarts at its first step and `bmDat.animationTime` restarts at zero. Looping
+`position*`/`rotate*`/`scale*` instructions (two or more steps) no longer step toward
+their targets independently. Their value is scheduled from `animationTime`: approach
+the first step from the saved rest pose, then travel the closed path of steps at the
+line's speed. A part that is off schedule moves toward it at three times its speed
+until it reaches it. Single-step lines and material, `visible`, and `txChange` lines
+keep the step-by-step code.
+
+**Why:** Walk cycles in Realms of Conflict and Sarge 2 drifted until arms and legs
+swung in parallel. There were two causes. The intended reset on an animation change
+was `ani.step = 0` on the instruction array, which reset nothing, so a resumed
+animation continued from stale steps. And every instruction kept its own phase, so a
+part that started from a different pose (an arm coming back from an attack) stayed
+permanently out of step with the parts it should mirror. Resetting the steps alone
+does not fix the second cause, and snapping to the rest pose on every switch would
+pop visibly. A shared clock with a short catch-up does both. Scheduling from the rest
+pose reproduces the old path when an animation starts from rest. The old code also
+held each turning point for an extra frame, because the frame that reached a target
+was clamped there. The schedule does not, so loops now run at their written speed,
+slightly faster than before (30 frames instead of 31 for a 90° swing at
+3°/frame). `test/animation-sync.test.js` covers phase-locking after a switch, the
+restart, frame-rate independence, and full-turn spins.
+
+**Reached from:** Sarge 2 player play-testing. Realms of Conflict shows the same drift
+and picks up the fix when its bmloader dependency is updated.

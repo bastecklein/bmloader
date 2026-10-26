@@ -362,6 +362,7 @@ class RenderBasicModelProperties {
         this.animation = null; // Current animation being played
         this._scriptLines = null; // Original script lines for reference
         this.lastAnimation = null; // Last animation played
+        this.animationTime = 0; // Time the current animation has played, in animate() delta units
         this.defaultState = {}; // Default state of the model
         this.loaderRef = null; // Reference to the loader instance
         this.cacheKey = null; // Loader cache key, shared by all clones of this template
@@ -509,6 +510,7 @@ class RenderAnimation {
     clearCache() {
         this._cachedSpeed = undefined;
         this._cachedSteps = undefined;
+        this._cycle = undefined;
     }
 }
 
@@ -559,13 +561,6 @@ function animateModel(model, delta) {
             model.restoreState();
         }
 
-        if(model.bmDat.animations) {
-            for(let aniName in model.bmDat.animations) {
-                const ani = model.bmDat.animations[aniName];
-                ani.step = 0;
-            }
-        }
-
         return;
     }
 
@@ -573,26 +568,19 @@ function animateModel(model, delta) {
         model.saveState();
     }
 
-    for(let aniName in model.bmDat.animations) {
-        if(aniName == model.bmDat.animation) {
-            continue;
-        }
-        
-        const ani = model.bmDat.animations[aniName];
-        ani.step = 0;
+    const animation = model.bmDat.animations[model.bmDat.animation];
+
+    if(model.bmDat.animation !== model.bmDat.lastAnimation) {
+        startAnimation(model, animation);
     }
 
     model.bmDat.lastAnimation = model.bmDat.animation;
 
-    if(!model.bmDat.animation) {
-        return;
-    }
-
-    const animation = model.bmDat.animations[model.bmDat.animation];
-
     if(!animation) {
         return;
     }
+
+    model.bmDat.animationTime += delta;
 
     for(let i = 0; i < animation.length; i++) {
         const inst = animation[i];
@@ -600,8 +588,168 @@ function animateModel(model, delta) {
     }
 }
 
+/**
+ * Restarts an animation from its first step. Every instruction restarts together,
+ * and the shared clock that keeps looping instructions in phase starts at zero.
+ * @param {RenderBasicModel} model
+ * @param {RenderAnimation[]} animation
+ */
+function startAnimation(model, animation) {
+    model.bmDat.animationTime = 0;
+
+    if(!animation) {
+        return;
+    }
+
+    for(let i = 0; i < animation.length; i++) {
+        const inst = animation[i];
+        inst.step = 0;
+        inst.renTime = 0;
+        inst._rest = undefined;
+    }
+}
+
+const LOOP_PROPERTIES = { position: "position", rotate: "rotation", scale: "scale" };
+
+// An instruction that is away from its scheduled value moves at this multiple of its
+// own speed until it reaches the schedule, then follows it exactly.
+const LOOP_CATCH_UP = 3;
+
+// Mirrors the wrap the step-by-step path applies once a rotation reaches a full turn.
+function wrapTurn(value) {
+    if(value >= FULLTURN) {
+        return value - FULLTURN;
+    }
+
+    if(value <= -FULLTURN) {
+        return value + FULLTURN;
+    }
+
+    return value;
+}
+
+/**
+ * The closed path a looping position/rotation/scale instruction travels, or null when
+ * it does not loop (one step, no speed, or a value that is not a number).
+ */
+function getLoopCycle(model, inst) {
+    if(inst._cycle !== undefined) {
+        return inst._cycle;
+    }
+
+    inst._cycle = null;
+
+    const base = Object.keys(LOOP_PROPERTIES).find(prefix => inst.action.indexOf(prefix) == 0);
+
+    if(!base || inst.steps.length < 2) {
+        return null;
+    }
+
+    const isRotation = base == "rotate";
+    const speed = MathUtils.degToRad(parseFloat(getModValue(inst.speed, model)));
+    const values = inst.steps.map(function(step) {
+        const value = parseFloat(getModValue(step, model));
+        return isRotation ? MathUtils.degToRad(value) : value;
+    });
+
+    if(!(speed > 0) || values.some(value => !Number.isFinite(value))) {
+        return null;
+    }
+
+    const wrap = isRotation ? wrapTurn : value => value;
+    // Segment k heads to step k from where the previous step leaves the value.
+    const starts = values.map((value, k) => wrap(values[(k + values.length - 1) % values.length]));
+    const lengths = values.map((value, k) => Math.abs(value - starts[k]));
+    const total = lengths.reduce((sum, length) => sum + length, 0);
+
+    if(total <= 0) {
+        return null;
+    }
+
+    inst._cycle = {
+        property: LOOP_PROPERTIES[base],
+        axis: inst.action.slice(base.length).toLowerCase(),
+        isRotation,
+        wrap,
+        speed,
+        values,
+        starts,
+        lengths,
+        total
+    };
+
+    return inst._cycle;
+}
+
+/**
+ * Moves a looping instruction along a schedule driven by the animation's shared clock,
+ * so every looping instruction in an animation stays in phase with the others however
+ * the parts were posed when it started. From the rest pose the schedule matches the
+ * step-by-step path: approach the first step, then travel the steps in order, forever.
+ * @returns {boolean} false if the instruction does not loop.
+ */
+function animateLoop(model, inst, ob, delta) {
+    const cycle = getLoopCycle(model, inst);
+
+    if(!cycle) {
+        return false;
+    }
+
+    const holder = ob[cycle.property];
+
+    if(inst._rest === undefined) {
+        const saved = model.bmDat.defaultState[ob.id];
+        inst._rest = saved ? saved[cycle.property][cycle.axis] : holder[cycle.axis];
+    }
+
+    const time = model.bmDat.animationTime;
+    const first = cycle.values[0];
+    const approach = Math.abs(first - inst._rest) / cycle.speed;
+    let scheduled;
+
+    if(time < approach) {
+        scheduled = inst._rest + Math.sign(first - inst._rest) * cycle.speed * time;
+        inst.step = 0;
+    } else {
+        let distance = ((time - approach) * cycle.speed) % cycle.total;
+        const count = cycle.values.length;
+
+        for(let i = 1; i <= count; i++) {
+            const k = i % count;
+
+            if(distance < cycle.lengths[k] || i == count) {
+                const toward = Math.sign(cycle.values[k] - cycle.starts[k]);
+                scheduled = cycle.starts[k] + toward * Math.min(distance, cycle.lengths[k]);
+                inst.step = k;
+                break;
+            }
+
+            distance -= cycle.lengths[k];
+        }
+    }
+
+    scheduled = cycle.wrap(scheduled);
+
+    const current = holder[cycle.axis];
+    let gap = scheduled - current;
+
+    if(cycle.isRotation) {
+        gap = Math.atan2(Math.sin(gap), Math.cos(gap));
+    }
+
+    const catchUp = LOOP_CATCH_UP * cycle.speed * delta;
+
+    holder[cycle.axis] = Math.abs(gap) <= catchUp ? scheduled : cycle.wrap(current + Math.sign(gap) * catchUp);
+
+    return true;
+}
+
 function doAnimate(model, inst, delta) {
     const ob = model.bmDat.variables[inst.target];
+
+    if(ob && animateLoop(model, inst, ob, delta)) {
+        return;
+    }
 
     if(ob) {
         // Cache parsed speed value to avoid re-evaluation on every frame

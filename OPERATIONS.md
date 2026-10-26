@@ -562,6 +562,20 @@ Smooth actions move toward the current step at that rate and go on to the next
 step when they reach it, so how long a cycle takes depends on the distance
 between steps as well as on the speed.
 
+### Looping in step
+
+Setting `bmDat.animation` to a different animation restarts every one of its
+lines from its first step. The `position*`, `rotate*`, and `scale*` lines with
+two or more steps then share one clock. From the saved rest pose, each line
+moves toward its first step and then cycles through its steps, as described
+above. A part that starts somewhere else (for example an arm the previous
+animation left raised) catches up at three times its speed and then follows the
+shared clock exactly. Lines with the same speed and steps therefore stay in
+step: a walk cycle's arms and legs keep swinging in opposite directions however
+often the animation is switched or the frame rate changes. Single-step lines and
+the `emissiveIntensity`, `opacity`, `visible`, and `txChange` actions behave as
+before.
+
 ### Supported Actions
 
 #### Position Animations
